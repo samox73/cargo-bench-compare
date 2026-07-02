@@ -83,14 +83,16 @@ cargo bench-compare -p rmc-core --bench hot_path --json > cmp.json
 
 ## Progress
 
-Binary mode shows a live status line on stderr during measurement runs: run
-counter, side, elapsed time, and ETA. It is automatically disabled when stderr is
-not a terminal, and can be disabled with `--no-progress`.
+Binary mode shows a live progress bar on stderr during measurement runs. The bar
+spans all `2 × reps` runs — each run fills an equal segment — annotated with the
+run counter, side, elapsed time, and ETA. It is automatically disabled when
+stderr is not a terminal, and can be disabled with `--no-progress`.
 
-`--progress-regex` adds within-run percentages by scraping the binary's stdout or
-stderr. Two capture groups are read as `done/total`; one capture group is read as
-a percentage from 0 to 100. Named groups `done`/`total`/`percent` also work.
-Matching is best-effort; lines that fail to parse are ignored.
+`--progress-regex` adds within-run progress by scraping the binary's stdout or
+stderr: the current segment then fills continuously instead of jumping at run
+boundaries. Two capture groups are read as `done/total`; one capture group is
+read as a percentage from 0 to 100. Named groups `done`/`total`/`percent` also
+work. Matching is best-effort; lines that fail to parse are ignored.
 
 ```bash
 cargo bench-compare -p rmc-minimal --bin rmc-minimal --reps 3 \
@@ -99,6 +101,12 @@ cargo bench-compare -p rmc-minimal --bin rmc-minimal --reps 3 \
 
 The benchmarked process pays for its own printing, so rate-limit progress output
 to roughly 10 lines/sec to keep the measurement clean.
+
+Builds are summarized the same way: instead of streaming every `Compiling …`
+line, a single status line per side shows the crate cargo is currently
+compiling, a crate counter, and elapsed time. Cargo's full output still streams
+when stderr is not a terminal or with `--no-progress`, and build failures always
+print the captured diagnostics.
 
 ## Revisions and defaults
 

@@ -1,8 +1,13 @@
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
+
+/// Bar resolution per measurement run: each run owns an equal segment of the
+/// bar, and within-run fractions (from --progress-regex) fill it continuously.
+const UNITS_PER_RUN: u64 = 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -78,10 +83,9 @@ fn render(rx: mpsc::Receiver<Event>) {
         base: Vec::new(),
         candidate: Vec::new(),
     };
-    let mut painted = false;
-    let mut last_paint = Instant::now() - Duration::from_secs(1);
+    let mut bar: Option<ProgressBar> = None;
     loop {
-        let force = match rx.recv_timeout(Duration::from_millis(200)) {
+        match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(Event::RunStart { run, total, side }) => {
                 state.current = Some(Current {
                     run,
@@ -90,13 +94,14 @@ fn render(rx: mpsc::Receiver<Event>) {
                     started: Instant::now(),
                     fraction: None,
                 });
-                true
+                let bar = bar.get_or_insert_with(|| new_bar(total));
+                bar.set_style(bar_style(side));
+                bar.set_prefix(prefix_for(run, total, side));
             }
             Ok(Event::Fraction(f)) => {
                 if let Some(current) = &mut state.current {
                     current.fraction = Some(f.clamp(0.0, 1.0));
                 }
-                false
             }
             Ok(Event::RunEnd) => {
                 if let Some(current) = state.current.take() {
@@ -105,61 +110,124 @@ fn render(rx: mpsc::Receiver<Event>) {
                         Side::Base => state.base.push(secs),
                         Side::Candidate => state.candidate.push(secs),
                     }
+                    if let Some(bar) = &bar {
+                        bar.set_position(u64::from(current.run) * UNITS_PER_RUN);
+                    }
                 }
-                false
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => false,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                if painted {
-                    let _ = write!(std::io::stderr(), "\r\x1b[K");
-                    let _ = std::io::stderr().flush();
+                if let Some(bar) = &bar {
+                    bar.finish_and_clear();
                 }
                 return;
             }
-        };
-        if (force || last_paint.elapsed() >= Duration::from_millis(100))
-            && let Some(current) = state.current
-        {
-            let elapsed = current.started.elapsed().as_secs_f64();
-            let line = compose_line(
-                current.run,
-                current.total,
-                current.side,
-                current.fraction,
-                elapsed,
+        }
+        if let (Some(bar), Some(current)) = (&bar, state.current) {
+            bar.set_position(bar_position(current.run, current.fraction));
+            bar.set_message(compose_message(
+                current.started.elapsed().as_secs_f64(),
                 eta_secs(&state),
-            );
-            let _ = write!(std::io::stderr(), "\r\x1b[K{line}");
-            let _ = std::io::stderr().flush();
-            painted = true;
-            last_paint = Instant::now();
+            ));
         }
     }
 }
 
-fn compose_line(
-    run: u32,
-    total: u32,
-    side: Side,
-    fraction: Option<f64>,
-    elapsed_secs: f64,
-    eta_secs: Option<f64>,
-) -> String {
-    let mut parts = vec![
-        format!("run {run}/{total}"),
-        match side {
-            Side::Base => "base".to_owned(),
-            Side::Candidate => "candidate".to_owned(),
-        },
-    ];
-    if let Some(fraction) = fraction {
-        parts.push(format!("{}%", (fraction * 100.0).floor() as u32));
+fn new_bar(total_runs: u32) -> ProgressBar {
+    let bar = ProgressBar::new(u64::from(total_runs) * UNITS_PER_RUN);
+    bar.enable_steady_tick(Duration::from_millis(100));
+    bar
+}
+
+/// KITT scanner spinner: a dot sweeping back and forth inside a bracket.
+/// All animation frames are 7 cells wide; the last entry is indicatif's
+/// "finished" frame — never visible here (the bar is cleared) but kept
+/// width-consistent anyway.
+const TICK_FRAMES: &[&str] = &[
+    "▐●    ▌",
+    "▐ ●   ▌",
+    "▐  ●  ▌",
+    "▐   ● ▌",
+    "▐    ●▌",
+    "▐   ● ▌",
+    "▐  ●  ▌",
+    "▐ ●   ▌",
+    "▐     ▌",
+];
+
+/// One-line build status on stderr: KITT spinner, side-tinted "building
+/// base/candidate" label, the latest cargo status line, and elapsed time.
+/// Returns None when `side` is None (--no-progress) or stderr is not a
+/// terminal — callers then stream cargo's output unchanged instead.
+pub fn build_status_bar(side: Option<Side>) -> Option<ProgressBar> {
+    let side = side?;
+    if !std::io::stderr().is_terminal() {
+        return None;
     }
-    parts.push(fmt_duration(elapsed_secs));
-    if let Some(eta) = eta_secs {
-        parts.push(format!("eta ~{}", fmt_duration(eta)));
+    let color = side_color(side);
+    let bar = ProgressBar::new_spinner();
+    bar.set_style(
+        ProgressStyle::with_template(&format!(
+            "{{spinner}} {{prefix:.{color}.bold}} · {{msg}} · {{elapsed}}"
+        ))
+        .expect("progress template must parse")
+        .tick_strings(TICK_FRAMES),
+    );
+    bar.set_prefix(format!("building {}", side_label(side)));
+    bar.set_message("starting cargo");
+    bar.enable_steady_tick(Duration::from_millis(100));
+    Some(bar)
+}
+
+/// Spinner and bar stay uncolored; only the "run X/Y · side" prefix is tinted
+/// by the side currently measured: cyan = base, magenta = candidate. Styling
+/// lives entirely in the template so the prefix/message helpers stay plain,
+/// testable strings.
+fn bar_style(side: Side) -> ProgressStyle {
+    let color = side_color(side);
+    ProgressStyle::with_template(&format!(
+        "{{spinner}} {{bar:42}} {{percent:>3.bold}}% · {{prefix:.{color}.bold}} · {{msg}}"
+    ))
+    .expect("progress template must parse")
+    .progress_chars("█▉▊▋▌▍▎▏░")
+    .tick_strings(TICK_FRAMES)
+}
+
+fn side_color(side: Side) -> &'static str {
+    match side {
+        Side::Base => "cyan",
+        Side::Candidate => "magenta",
     }
-    parts.join(" · ")
+}
+
+fn side_label(side: Side) -> &'static str {
+    match side {
+        Side::Base => "base",
+        Side::Candidate => "candidate",
+    }
+}
+
+fn prefix_for(run: u32, total: u32, side: Side) -> String {
+    format!("run {run}/{total} · {}", side_label(side))
+}
+
+/// The bar spans all runs equally: run `run` (1-based) fills the segment
+/// [(run-1)/total, run/total], continuously when a within-run fraction is known.
+fn bar_position(run: u32, fraction: Option<f64>) -> u64 {
+    let base = (u64::from(run) - 1) * UNITS_PER_RUN;
+    let within = fraction.unwrap_or(0.0).clamp(0.0, 1.0) * UNITS_PER_RUN as f64;
+    base + within as u64
+}
+
+fn compose_message(elapsed_secs: f64, eta_secs: Option<f64>) -> String {
+    match eta_secs {
+        Some(eta) => format!(
+            "{} · eta ~{}",
+            fmt_duration(elapsed_secs),
+            fmt_duration(eta)
+        ),
+        None => fmt_duration(elapsed_secs),
+    }
 }
 
 fn fmt_duration(secs: f64) -> String {
@@ -327,15 +395,43 @@ mod tests {
     }
 
     #[test]
-    fn compose_line_variants() {
+    fn compose_message_variants() {
+        assert_eq!(compose_message(4.2, None), "4.2s");
+        assert_eq!(compose_message(4.2, Some(41.0)), "4.2s · eta ~41.0s");
+    }
+
+    #[test]
+    fn prefix_names_run_and_side() {
+        assert_eq!(prefix_for(3, 10, Side::Candidate), "run 3/10 · candidate");
+        assert_eq!(prefix_for(1, 4, Side::Base), "run 1/4 · base");
+    }
+
+    #[test]
+    fn tick_frames_share_one_width() {
+        // frames of differing widths would make the line jitter every tick
+        for frame in TICK_FRAMES {
+            assert_eq!(frame.chars().count(), 7, "frame {frame:?}");
+        }
+    }
+
+    #[test]
+    fn bar_styles_parse_for_both_sides() {
+        // bar_style panics on an invalid template; the render thread would
+        // swallow that panic, so pin it down here
+        let _ = bar_style(Side::Base);
+        let _ = bar_style(Side::Candidate);
+    }
+
+    #[test]
+    fn bar_position_fills_one_segment_per_run() {
+        assert_eq!(bar_position(1, None), 0);
+        assert_eq!(bar_position(1, Some(0.5)), UNITS_PER_RUN / 2);
+        assert_eq!(bar_position(2, None), UNITS_PER_RUN);
         assert_eq!(
-            compose_line(3, 10, Side::Candidate, None, 4.2, None),
-            "run 3/10 · candidate · 4.2s"
+            bar_position(3, Some(0.25)),
+            2 * UNITS_PER_RUN + UNITS_PER_RUN / 4
         );
-        assert_eq!(
-            compose_line(3, 10, Side::Candidate, Some(0.37), 4.2, Some(41.0)),
-            "run 3/10 · candidate · 37% · 4.2s · eta ~41.0s"
-        );
+        assert_eq!(bar_position(4, Some(1.5)), 4 * UNITS_PER_RUN);
     }
 
     #[test]

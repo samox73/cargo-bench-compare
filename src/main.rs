@@ -170,10 +170,10 @@ fn real_main() -> Result<()> {
             Some(lock),
         )
     };
-    let build_mode = if cli.cold { "cold" } else { "warm" };
 
     let base_ws = workspace.worktree_ws_root(&base_wt.path);
     let candidate_ws = workspace.worktree_ws_root(&candidate_wt.path);
+    let build_mode = build_mode(cli.cold, &base_ws, &candidate_ws);
 
     let pinned_label = pinned_core
         .map(|core| format!("core {core} (taskset)"))
@@ -188,9 +188,22 @@ fn real_main() -> Result<()> {
                 progress: progress_pattern,
             } => {
                 let reps = cli.reps.unwrap_or(5);
-                let exe_base = builder::build_bin(&base_ws, package, bin, &cli.profile)?;
+                let status = |side| (!cli.no_progress).then_some(side);
+                let exe_base = builder::build_bin(
+                    &base_ws,
+                    package,
+                    bin,
+                    &cli.profile,
+                    status(progress::Side::Base),
+                )?;
                 check_cancelled()?;
-                let exe_candidate = builder::build_bin(&candidate_ws, package, bin, &cli.profile)?;
+                let exe_candidate = builder::build_bin(
+                    &candidate_ws,
+                    package,
+                    bin,
+                    &cli.profile,
+                    status(progress::Side::Candidate),
+                )?;
                 check_cancelled()?;
                 let progress = progress::Progress::new(!cli.no_progress);
                 let (base_values, candidate_values, unit, lower_is_better) =
@@ -236,9 +249,24 @@ fn real_main() -> Result<()> {
                         "warning: --reps is ignored in criterion mode (criterion samples internally)"
                     );
                 }
-                builder::build_bench(&base_ws, package, bench, &cli.profile, cli.json)?;
+                let status = |side| (!cli.no_progress).then_some(side);
+                builder::build_bench(
+                    &base_ws,
+                    package,
+                    bench,
+                    &cli.profile,
+                    cli.json,
+                    status(progress::Side::Base),
+                )?;
                 check_cancelled()?;
-                builder::build_bench(&candidate_ws, package, bench, &cli.profile, cli.json)?;
+                builder::build_bench(
+                    &candidate_ws,
+                    package,
+                    bench,
+                    &cli.profile,
+                    cli.json,
+                    status(progress::Side::Candidate),
+                )?;
                 check_cancelled()?;
                 let base_label = format!("bcmp-{}", base.short);
                 let candidate_label = format!("bcmp-{}", candidate.short);
@@ -337,6 +365,15 @@ fn resolve_work_dir(explicit: Option<PathBuf>) -> Result<PathBuf> {
         .join("cargo-bench-compare"))
 }
 
+fn build_mode(cold: bool, base_ws: &Path, candidate_ws: &Path) -> &'static str {
+    if cold || !builder::target_dir(base_ws).exists() || !builder::target_dir(candidate_ws).exists()
+    {
+        "cold"
+    } else {
+        "warm"
+    }
+}
+
 fn check_cancelled() -> Result<()> {
     if CANCELLED.load(Ordering::SeqCst) {
         Err(anyhow!("interrupted"))
@@ -386,4 +423,30 @@ fn compare_criterion(
     let only_base = base_ids.difference(&candidate_ids).cloned().collect();
     let only_candidate = candidate_ids.difference(&base_ids).cloned().collect();
     (comparisons, only_base, only_candidate)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_mode_is_cold_without_both_cached_targets() {
+        let root = std::env::temp_dir().join(format!(
+            "bcmp-build-mode-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let base = root.join("base");
+        let candidate = root.join("candidate");
+
+        assert_eq!(build_mode(false, &base, &candidate), "cold");
+        std::fs::create_dir_all(builder::target_dir(&base)).unwrap();
+        assert_eq!(build_mode(false, &base, &candidate), "cold");
+        std::fs::create_dir_all(builder::target_dir(&candidate)).unwrap();
+        assert_eq!(build_mode(false, &base, &candidate), "warm");
+        assert_eq!(build_mode(true, &base, &candidate), "cold");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
