@@ -27,7 +27,8 @@ export extern "cargo bench-compare" [
   --no-pin                                           # disable CPU pinning
   --profile: string@"nu-complete bcmp profiles"      # cargo profile used to build both revisions (default: release-tuned)
   --json                                             # emit machine-readable JSON instead of the human-readable table
-  --keep-worktrees                                   # keep the temporary worktrees for debugging
+  --cold                                             # build in fresh worktrees instead of the persistent warm ones
+  --keep-worktrees                                   # keep the temporary worktrees for debugging (cold mode; warm worktrees always persist)
   --work-dir: path                                   # parent directory for temporary worktrees (default: ~/.cache/cargo-bench-compare)
   --help(-h)                                         # print help
   ...args: string                                    # trailing args passed to the binary verbatim (after --)
@@ -47,7 +48,8 @@ export extern "cargo-bench-compare" [
   --no-pin                                           # disable CPU pinning
   --profile: string@"nu-complete bcmp profiles"      # cargo profile used to build both revisions (default: release-tuned)
   --json                                             # emit machine-readable JSON instead of the human-readable table
-  --keep-worktrees                                   # keep the temporary worktrees for debugging
+  --cold                                             # build in fresh worktrees instead of the persistent warm ones
+  --keep-worktrees                                   # keep the temporary worktrees for debugging (cold mode; warm worktrees always persist)
   --work-dir: path                                   # parent directory for temporary worktrees (default: ~/.cache/cargo-bench-compare)
   --help(-h)                                         # print help
   ...args: string                                    # trailing args passed to the binary verbatim (after --)

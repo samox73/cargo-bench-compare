@@ -35,6 +35,7 @@ pub struct HumanReport<'a> {
     pub pinned_label: String,
     pub base: &'a ResolvedRev,
     pub candidate: &'a ResolvedRev,
+    pub build: &'a str,
     pub dirty: bool,
     pub results: &'a [Comparison],
     pub only_in_base: &'a [String],
@@ -54,8 +55,8 @@ pub fn print_human(r: HumanReport<'_>) {
         println!("metric: {metric}");
     }
     println!(
-        "pinning: {}   RUSTFLAGS=\"-C target-cpu=native\"",
-        r.pinned_label
+        "pinning: {}   build: {}   RUSTFLAGS=\"-C target-cpu=native\"",
+        r.pinned_label, r.build
     );
     if r.dirty {
         println!(
@@ -137,6 +138,7 @@ struct JsonReport<'a> {
     profile: &'a str,
     base: &'a ResolvedRev,
     candidate: &'a ResolvedRev,
+    build: &'a str,
     pinned_core: Option<u32>,
     dirty_worktree: bool,
     results: &'a [Comparison],
@@ -150,6 +152,7 @@ pub struct JsonReportInput<'a> {
     pub profile: &'a str,
     pub base: &'a ResolvedRev,
     pub candidate: &'a ResolvedRev,
+    pub build: &'a str,
     pub pinned_core: Option<u32>,
     pub dirty: bool,
     pub results: &'a [Comparison],
@@ -166,6 +169,7 @@ pub fn print_json(input: JsonReportInput<'_>) -> Result<()> {
         profile: input.profile,
         base: input.base,
         candidate: input.candidate,
+        build: input.build,
         pinned_core: input.pinned_core,
         dirty_worktree: input.dirty,
         results: input.results,

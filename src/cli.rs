@@ -6,7 +6,7 @@ use regex::Regex;
 
 #[derive(Parser)]
 #[command(version, about)]
-#[command(subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]
+#[command(subcommand_negates_reqs = true)]
 #[command(group(
     ArgGroup::new("mode")
         .args(["bench", "bin"])
@@ -61,11 +61,14 @@ pub struct Cli {
     /// Emit machine-readable JSON instead of the human-readable table
     #[arg(long = "json")]
     pub json: bool,
-    /// Keep the temporary worktrees for debugging
+    /// Build in fresh worktrees instead of the persistent warm ones (slower, but guarantees a from-scratch build)
+    #[arg(long = "cold")]
+    pub cold: bool,
+    /// Keep the temporary worktrees for debugging (cold mode; warm worktrees always persist)
     #[arg(long = "keep-worktrees")]
     pub keep_worktrees: bool,
     /// Parent directory for temporary worktrees [default: ~/.cache/cargo-bench-compare]
-    #[arg(long = "work-dir", value_hint = clap::ValueHint::DirPath)]
+    #[arg(long = "work-dir", value_hint = clap::ValueHint::DirPath, global = true)]
     pub work_dir: Option<PathBuf>,
 }
 
@@ -73,9 +76,18 @@ pub struct Cli {
 pub enum Sub {
     /// Generate shell completions
     Completions(CompletionsArgs),
+    /// Remove this repo's cached worktrees and build artifacts
+    Clean(CleanArgs),
     /// Print completion candidates (used by shell completion scripts)
     #[command(name = "__candidates", hide = true)]
     Candidates { kind: CandidateKind },
+}
+
+#[derive(clap::Args)]
+pub struct CleanArgs {
+    /// Clean the caches of all repos, not just the current one
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(clap::Args)]

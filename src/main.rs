@@ -1,5 +1,6 @@
 mod builder;
 mod candidates;
+mod clean;
 mod cli;
 mod completions;
 mod criterion;
@@ -16,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::{Result, anyhow};
 
 use crate::cli::{Cli, Mode, Sub};
+use crate::git::Cleanup;
 use crate::stats::{Summary, summarize};
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -31,6 +33,10 @@ fn real_main() -> Result<()> {
     let cli = Cli::parse_from_env();
     match &cli.command {
         Some(Sub::Completions(args)) => return completions::run(args),
+        Some(Sub::Clean(args)) => {
+            let work_dir_root = resolve_work_dir(cli.work_dir.clone())?;
+            return clean::run(args.all, &work_dir_root);
+        }
         Some(Sub::Candidates { kind }) => return candidates::print(*kind),
         None => {}
     }
@@ -80,12 +86,41 @@ fn real_main() -> Result<()> {
     let work_dir_root = resolve_work_dir(cli.work_dir.clone())?;
     let work_dir = git::repo_work_dir(&work_dir_root, &repo_root);
     std::fs::create_dir_all(&work_dir)?;
+    let repo_path = std::fs::canonicalize(&repo_root).unwrap_or_else(|_| repo_root.clone());
+    std::fs::write(
+        work_dir.join("repo-path.txt"),
+        format!("{}\n", repo_path.display()),
+    )?;
     git::sweep_stale_worktrees(&repo_root, &work_dir)?;
     runner::check_governor();
 
-    let base_wt = git::WorktreeGuard::create(&repo_root, &work_dir, &base, cli.keep_worktrees)?;
-    let candidate_wt =
-        git::WorktreeGuard::create(&repo_root, &work_dir, &candidate, cli.keep_worktrees)?;
+    let (base_wt, candidate_wt, _lock) = if cli.cold {
+        let cleanup = if cli.keep_worktrees {
+            Cleanup::KeepAnnounce
+        } else {
+            Cleanup::Remove
+        };
+        let base_wt = git::WorktreeGuard::create(&repo_root, &work_dir, &base, cleanup)?;
+        let cleanup = if cli.keep_worktrees {
+            Cleanup::KeepAnnounce
+        } else {
+            Cleanup::Remove
+        };
+        let candidate_wt = git::WorktreeGuard::create(&repo_root, &work_dir, &candidate, cleanup)?;
+        (base_wt, candidate_wt, None)
+    } else {
+        let lock = git::RepoLock::acquire(&work_dir)?;
+        let base_path = work_dir.join("warm-base");
+        let candidate_path = work_dir.join("warm-candidate");
+        git::prepare_warm_worktree(&repo_root, &base_path, &base)?;
+        git::prepare_warm_worktree(&repo_root, &candidate_path, &candidate)?;
+        (
+            git::WorktreeGuard::adopt(base_path),
+            git::WorktreeGuard::adopt(candidate_path),
+            Some(lock),
+        )
+    };
+    let build_mode = if cli.cold { "cold" } else { "warm" };
 
     let base_ws = workspace.worktree_ws_root(&base_wt.path);
     let candidate_ws = workspace.worktree_ws_root(&candidate_wt.path);
@@ -153,6 +188,9 @@ fn real_main() -> Result<()> {
                 check_cancelled()?;
                 builder::build_bench(&candidate_ws, package, bench, &cli.profile, cli.json)?;
                 check_cancelled()?;
+                let base_label = format!("bcmp-{}", base.short);
+                let candidate_label = format!("bcmp-{}", candidate.short);
+                criterion::remove_stale_baselines(&builder::target_dir(&base_ws), &base_label)?;
                 runner::run_criterion(
                     &base_ws,
                     package,
@@ -163,6 +201,10 @@ fn real_main() -> Result<()> {
                     cli.json,
                 )?;
                 check_cancelled()?;
+                criterion::remove_stale_baselines(
+                    &builder::target_dir(&candidate_ws),
+                    &candidate_label,
+                )?;
                 runner::run_criterion(
                     &candidate_ws,
                     package,
@@ -174,14 +216,9 @@ fn real_main() -> Result<()> {
                 )?;
                 check_cancelled()?;
 
-                let base_results = criterion::collect(
-                    &builder::target_dir(&base_ws),
-                    &format!("bcmp-{}", base.short),
-                )?;
-                let candidate_results = criterion::collect(
-                    &builder::target_dir(&candidate_ws),
-                    &format!("bcmp-{}", candidate.short),
-                )?;
+                let base_results = criterion::collect(&builder::target_dir(&base_ws), &base_label)?;
+                let candidate_results =
+                    criterion::collect(&builder::target_dir(&candidate_ws), &candidate_label)?;
                 let (comparisons, only_base, only_candidate) =
                     compare_criterion(base_results, candidate_results);
                 (
@@ -203,6 +240,7 @@ fn real_main() -> Result<()> {
             profile: &cli.profile,
             base: &base,
             candidate: &candidate,
+            build: build_mode,
             pinned_core,
             dirty,
             results: &results,
@@ -219,6 +257,7 @@ fn real_main() -> Result<()> {
             pinned_label,
             base: &base,
             candidate: &candidate,
+            build: build_mode,
             dirty,
             results: &results,
             only_in_base: &only_in_base,

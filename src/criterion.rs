@@ -43,6 +43,37 @@ pub fn collect(target_dir: &Path, baseline_label: &str) -> Result<Vec<CriterionR
     Ok(out)
 }
 
+/// Delete every directory named `bcmp-*` under `target/criterion` whose name is
+/// not `keep_label`. Silent no-op if the criterion dir does not exist.
+pub fn remove_stale_baselines(target_dir: &Path, keep_label: &str) -> Result<()> {
+    let root = target_dir.join("criterion");
+    if root.exists() {
+        prune_walk(&root, keep_label)?;
+    }
+    Ok(())
+}
+
+fn prune_walk(dir: &Path, keep_label: &str) -> Result<()> {
+    for entry in
+        std::fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("bcmp-") && name != keep_label {
+            std::fs::remove_dir_all(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+        } else {
+            prune_walk(&path, keep_label)?;
+        }
+    }
+    Ok(())
+}
+
 fn walk(root: &Path, dir: &Path, label: &str, out: &mut Vec<CriterionResult>) -> Result<()> {
     if dir == root.join("report") {
         return Ok(());
@@ -86,4 +117,32 @@ fn walk(root: &Path, dir: &Path, label: &str, out: &mut Vec<CriterionResult>) ->
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_stale_baselines_keeps_current_label() {
+        let root = std::env::temp_dir().join(format!("bcmp-criterion-{}", std::process::id()));
+        let _cleanup = TempDir(root.clone());
+        std::fs::create_dir_all(root.join("criterion/g/bcmp-old")).unwrap();
+        std::fs::create_dir_all(root.join("criterion/g/bcmp-new")).unwrap();
+        std::fs::write(root.join("criterion/g/bcmp-old/estimates.json"), "{}").unwrap();
+        std::fs::write(root.join("criterion/g/bcmp-new/estimates.json"), "{}").unwrap();
+
+        remove_stale_baselines(&root, "bcmp-new").unwrap();
+
+        assert!(!root.join("criterion/g/bcmp-old").exists());
+        assert!(root.join("criterion/g/bcmp-new").exists());
+    }
+
+    struct TempDir(std::path::PathBuf);
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 }

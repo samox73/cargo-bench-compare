@@ -1,7 +1,9 @@
 use std::ffi::OsStr;
+use std::fs::OpenOptions;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
@@ -203,7 +205,13 @@ pub fn is_dirty(repo_root: &Path) -> Result<bool> {
 pub struct WorktreeGuard {
     pub path: PathBuf,
     repo_root: PathBuf,
-    keep: bool,
+    cleanup: Cleanup,
+}
+
+pub enum Cleanup {
+    Remove,
+    KeepAnnounce,
+    KeepQuiet,
 }
 
 impl WorktreeGuard {
@@ -211,7 +219,7 @@ impl WorktreeGuard {
         repo_root: &Path,
         work_dir: &Path,
         rev: &ResolvedRev,
-        keep: bool,
+        cleanup: Cleanup,
     ) -> Result<WorktreeGuard> {
         let path = work_dir.join(format!("bcmp-{}-{}", rev.short, std::process::id()));
         let repo = repo_root.display().to_string();
@@ -223,31 +231,33 @@ impl WorktreeGuard {
             &[],
         )?;
 
-        let submodule_update = run_capture(
-            "git",
-            &["-C", &wt, "submodule", "update", "--init", "--recursive"],
-            &path,
-            &[],
-        );
-        if path.join(".gitmodules").exists() {
-            submodule_update?;
-        } else {
-            let _ = submodule_update;
-        }
+        init_submodules(&path)?;
 
         Ok(WorktreeGuard {
             path,
             repo_root: repo_root.to_owned(),
-            keep,
+            cleanup,
         })
+    }
+
+    pub fn adopt(path: PathBuf) -> WorktreeGuard {
+        WorktreeGuard {
+            path,
+            repo_root: PathBuf::new(),
+            cleanup: Cleanup::KeepQuiet,
+        }
     }
 }
 
 impl Drop for WorktreeGuard {
     fn drop(&mut self) {
-        if self.keep {
-            eprintln!("kept worktree: {}", self.path.display());
-            return;
+        match self.cleanup {
+            Cleanup::KeepQuiet => return,
+            Cleanup::KeepAnnounce => {
+                eprintln!("kept worktree: {}", self.path.display());
+                return;
+            }
+            Cleanup::Remove => {}
         }
         let repo = self.repo_root.display().to_string();
         let wt = self.path.display().to_string();
@@ -276,6 +286,127 @@ impl Drop for WorktreeGuard {
             );
         }
     }
+}
+
+/// Ensure a persistent worktree at `path` checked out at `rev.sha`, preserving
+/// mtimes of unchanged files (this is what keeps cargo builds warm — never
+/// delete-and-recreate a healthy worktree).
+pub fn prepare_warm_worktree(repo_root: &Path, path: &Path, rev: &ResolvedRev) -> Result<()> {
+    let path_arg = path.display().to_string();
+    let healthy = path.exists()
+        && Command::new("git")
+            .args(["-C", &path_arg, "rev-parse", "--git-dir"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+
+    if healthy {
+        run_capture(
+            "git",
+            &["-C", &path_arg, "checkout", "--detach", "--force", &rev.sha],
+            path,
+            &[],
+        )?;
+    } else {
+        let _ = std::fs::remove_dir_all(path);
+        let repo = repo_root.display().to_string();
+        let _ = run_capture("git", &["-C", &repo, "worktree", "prune"], repo_root, &[]);
+        run_capture(
+            "git",
+            &[
+                "-C", &repo, "worktree", "add", "--detach", &path_arg, &rev.sha,
+            ],
+            repo_root,
+            &[],
+        )?;
+    }
+
+    run_capture(
+        "git",
+        &["-C", &path_arg, "clean", "-fd", "-e", "target"],
+        path,
+        &[],
+    )?;
+    init_submodules(path)?;
+    let head = run_capture("git", &["-C", &path_arg, "rev-parse", "HEAD"], path, &[])?;
+    if head.trim() != rev.sha {
+        return Err(anyhow!(
+            "warm worktree {} failed to check out {}",
+            path.display(),
+            rev.sha
+        ));
+    }
+    Ok(())
+}
+
+fn init_submodules(worktree: &Path) -> Result<()> {
+    let wt = worktree.display().to_string();
+    let submodule_update = run_capture(
+        "git",
+        &["-C", &wt, "submodule", "update", "--init", "--recursive"],
+        worktree,
+        &[],
+    );
+    if worktree.join(".gitmodules").exists() {
+        submodule_update?;
+    } else {
+        let _ = submodule_update;
+    }
+    Ok(())
+}
+
+pub struct RepoLock {
+    path: PathBuf,
+}
+
+impl RepoLock {
+    /// Create `<repo_dir>/warm.lock` with O_EXCL containing our pid.
+    pub fn acquire(repo_dir: &Path) -> Result<RepoLock> {
+        let path = repo_dir.join("warm.lock");
+        for attempt in 0..2 {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    writeln!(file, "{}", std::process::id())?;
+                    return Ok(RepoLock { path });
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let pid = std::fs::read_to_string(&path).unwrap_or_default();
+                    let pid = pid.trim().to_owned();
+                    if !lock_holder_alive(&path) && attempt == 0 {
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                    return Err(anyhow!(
+                        "another cargo-bench-compare run (pid {pid}) is active on this repo; wait for it, or use --cold, or remove {} if the pid is wrong",
+                        path.display()
+                    ));
+                }
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("failed to create {}", path.display()));
+                }
+            }
+        }
+        unreachable!()
+    }
+}
+
+impl Drop for RepoLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+pub fn lock_holder_alive(lock: &Path) -> bool {
+    if !lock.exists() {
+        return false;
+    }
+    if !cfg!(target_os = "linux") {
+        return true;
+    }
+    let pid = std::fs::read_to_string(lock).unwrap_or_default();
+    Path::new("/proc").join(pid.trim()).exists()
 }
 
 pub fn sweep_stale_worktrees(repo_root: &Path, work_dir: &Path) -> Result<()> {
@@ -402,7 +533,7 @@ mod tests {
             ("trunk", None),
         ] {
             let dir = init_repo("bcmp-default-base", branch);
-            let _cleanup = Cleanup(dir.clone());
+            let _cleanup = TempDir(dir.clone());
             match expected {
                 Some(name) => assert_eq!(default_base(&dir).unwrap(), name),
                 None => assert!(default_base(&dir).is_err()),
@@ -413,7 +544,7 @@ mod tests {
     #[test]
     fn snapshot_includes_unstaged_and_untracked_and_respects_gitignore() {
         let dir = init_repo("bcmp-snapshot-dirty", "main");
-        let _cleanup = Cleanup(dir.clone());
+        let _cleanup = TempDir(dir.clone());
         std::fs::write(dir.join("tracked.txt"), "old").unwrap();
         std::fs::write(dir.join(".gitignore"), "ignored.txt\n").unwrap();
         git_in(&dir, &["add", "-A"]);
@@ -448,7 +579,7 @@ mod tests {
     #[test]
     fn snapshot_on_clean_tree_is_head() {
         let dir = init_repo("bcmp-snapshot-clean", "main");
-        let _cleanup = Cleanup(dir.clone());
+        let _cleanup = TempDir(dir.clone());
 
         let snapshot = resolve_spec(&dir, ":worktree").unwrap();
 
@@ -459,7 +590,7 @@ mod tests {
     #[test]
     fn merge_base_resolves_fork_point() {
         let dir = init_repo("bcmp-merge-base", "main");
-        let _cleanup = Cleanup(dir.clone());
+        let _cleanup = TempDir(dir.clone());
         let a = git_in(&dir, &["rev-parse", "HEAD"]);
         git_in(&dir, &["switch", "-c", "feat"]);
         git_in(&dir, &["commit", "--allow-empty", "-qm", "B"]);
@@ -471,6 +602,77 @@ mod tests {
 
         assert_eq!(base.sha, a);
         assert_eq!(base.spec, "merge-base(main)");
+    }
+
+    #[test]
+    fn warm_worktree_preserves_mtimes_of_unchanged_files() {
+        let dir = init_repo("bcmp-warm-mtime", "main");
+        let _cleanup = TempDir(dir.clone());
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        std::fs::write(dir.join("b.txt"), "b").unwrap();
+        git_in(&dir, &["add", "-A"]);
+        git_in(&dir, &["commit", "-qm", "A"]);
+        let sha_a = resolve_rev(&dir, "HEAD").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(dir.join("b.txt"), "bb").unwrap();
+        git_in(&dir, &["commit", "-am", "B"]);
+        let sha_b = resolve_rev(&dir, "HEAD").unwrap();
+        let wt = dir.with_extension("warm");
+        let _wt_cleanup = TempDir(wt.clone());
+
+        prepare_warm_worktree(&dir, &wt, &sha_a).unwrap();
+        let a_mtime = std::fs::metadata(wt.join("a.txt"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        prepare_warm_worktree(&dir, &wt, &sha_b).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(wt.join("a.txt"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            a_mtime
+        );
+        assert_eq!(std::fs::read_to_string(wt.join("b.txt")).unwrap(), "bb");
+        assert_eq!(git_in(&wt, &["rev-parse", "HEAD"]), sha_b.sha);
+        prepare_warm_worktree(&dir, &wt, &sha_a).unwrap();
+        assert_eq!(
+            std::fs::metadata(wt.join("a.txt"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            a_mtime
+        );
+    }
+
+    #[test]
+    fn warm_worktree_recovers_from_deleted_dir() {
+        let dir = init_repo("bcmp-warm-recover", "main");
+        let _cleanup = TempDir(dir.clone());
+        let rev = resolve_rev(&dir, "HEAD").unwrap();
+        let wt = dir.with_extension("warm");
+        let _wt_cleanup = TempDir(wt.clone());
+
+        prepare_warm_worktree(&dir, &wt, &rev).unwrap();
+        std::fs::remove_dir_all(&wt).unwrap();
+        prepare_warm_worktree(&dir, &wt, &rev).unwrap();
+
+        assert_eq!(git_in(&wt, &["rev-parse", "HEAD"]), rev.sha);
+    }
+
+    #[test]
+    fn repo_lock_blocks_second_acquire_and_steals_stale() {
+        let dir = std::env::temp_dir().join(format!("bcmp-lock-{}", std::process::id()));
+        let _cleanup = TempDir(dir.clone());
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let first = RepoLock::acquire(&dir).unwrap();
+        assert!(RepoLock::acquire(&dir).is_err());
+        drop(first);
+        drop(RepoLock::acquire(&dir).unwrap());
+        std::fs::write(dir.join("warm.lock"), u32::MAX.to_string()).unwrap();
+        drop(RepoLock::acquire(&dir).unwrap());
     }
 
     fn init_repo(prefix: &str, branch: &str) -> PathBuf {
@@ -526,9 +728,9 @@ mod tests {
             .success()
     }
 
-    struct Cleanup(PathBuf);
+    struct TempDir(PathBuf);
 
-    impl Drop for Cleanup {
+    impl Drop for TempDir {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }

@@ -108,6 +108,25 @@ changes it measures exactly "my edits vs my last commit"; with a clean tree ther
 is nothing to measure and it stops with a "nothing to compare" error instead of
 benchmarking noise (pass `--rev` or `--rev-base` to pick revisions explicitly).
 
+## Warm builds and disk usage
+
+Builds are warm by default. The tool keeps two persistent worktrees under
+`~/.cache/cargo-bench-compare/<repo>/`: `warm-base` and `warm-candidate`. Their
+`target/` directories stay in place, so repeated runs usually leave the base side
+as a no-op and rebuild only crates changed by the candidate.
+
+Use `--cold` when you need guaranteed from-scratch builds in fresh temporary
+worktrees. Warm caches can grow to several GB because each side has its own target
+directory; reclaim them with:
+
+```bash
+cargo bench-compare clean
+cargo bench-compare clean --all
+```
+
+The warm worktrees are normal git worktrees and appear in `git worktree list`.
+Manually removing them is safe; the next warm run recreates them.
+
 ## Known Limitations
 
 - Profile detection is a simple text match in the workspace `Cargo.toml`: a
@@ -119,6 +138,5 @@ benchmarking noise (pass `--rev` or `--rev-base` to pick revisions explicitly).
 
 ## Future Work
 
-Welch's t-test, `BENCH_RESULT` line protocol, `--cache-dir` warm target dirs
-shared by sha, `--fail-on-regression` exit code, lockfile-difference note, and
-colors are intentionally out of scope for now.
+Welch's t-test, `BENCH_RESULT` line protocol, `--fail-on-regression` exit code,
+lockfile-difference note, and colors are intentionally out of scope for now.
