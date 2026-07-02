@@ -1,0 +1,264 @@
+mod builder;
+mod cli;
+mod criterion;
+mod git;
+mod report;
+mod runner;
+mod stats;
+mod workspace;
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use anyhow::{Result, anyhow};
+
+use crate::cli::{Cli, Mode};
+use crate::stats::{Summary, summarize};
+
+static CANCELLED: AtomicBool = AtomicBool::new(false);
+
+fn main() {
+    if let Err(err) = real_main() {
+        eprintln!("error: {err:#}");
+        std::process::exit(1);
+    }
+}
+
+fn real_main() -> Result<()> {
+    let cli = Cli::parse_from_env();
+    let mode = cli.mode()?;
+
+    ctrlc::set_handler(|| CANCELLED.store(true, Ordering::SeqCst))?;
+
+    let repo_root = git::repo_root()?;
+    let workspace = workspace::load(&repo_root, &cli.package)?;
+    let _ = (&workspace.repo_root, &workspace.ws_root);
+    let base = git::resolve_rev(&repo_root, &cli.rev_base)?;
+    let candidate = git::resolve_rev(&repo_root, &cli.rev)?;
+    if base.sha == candidate.sha {
+        return Err(anyhow!(
+            "base and candidate both resolve to {}; nothing to compare",
+            base.sha
+        ));
+    }
+    let dirty = git::is_dirty(&repo_root)?;
+    if dirty {
+        eprintln!(
+            "warning: working tree is dirty; uncommitted local changes are NOT included in either side"
+        );
+    }
+
+    let work_dir = resolve_work_dir(cli.work_dir)?;
+    std::fs::create_dir_all(&work_dir)?;
+    git::sweep_stale_worktrees(&repo_root, &work_dir)?;
+    runner::check_governor();
+
+    let base_wt = git::WorktreeGuard::create(&repo_root, &work_dir, &base, cli.keep_worktrees)?;
+    let candidate_wt =
+        git::WorktreeGuard::create(&repo_root, &work_dir, &candidate, cli.keep_worktrees)?;
+
+    let base_ws = workspace.worktree_ws_root(&base_wt.path);
+    let candidate_ws = workspace.worktree_ws_root(&candidate_wt.path);
+
+    let pin = runner::pin_prefix(cli.runs_on_core, cli.no_pin);
+    let pinned_core = if pin.is_empty() {
+        None
+    } else {
+        Some(cli.runs_on_core)
+    };
+    let pinned_label = pinned_core
+        .map(|core| format!("core {core} (taskset)"))
+        .unwrap_or_else(|| "disabled".to_owned());
+
+    let (results, only_in_base, only_in_candidate, mode_name, mode_label, metric_label, reps_label) =
+        match &mode {
+            Mode::Binary { bin, args, metric } => {
+                let exe_base = builder::build_bin(&base_ws, &cli.package, bin, &cli.profile)?;
+                check_cancelled()?;
+                let exe_candidate =
+                    builder::build_bin(&candidate_ws, &cli.package, bin, &cli.profile)?;
+                check_cancelled()?;
+                let (base_values, candidate_values, unit, lower_is_better) =
+                    runner::run_binary_interleaved(
+                        runner::BinaryRun {
+                            exe: &exe_base,
+                            args,
+                            cwd: &base_ws,
+                            pin: &pin,
+                        },
+                        runner::BinaryRun {
+                            exe: &exe_candidate,
+                            args,
+                            cwd: &candidate_ws,
+                            pin: &pin,
+                        },
+                        cli.reps,
+                        metric,
+                        &CANCELLED,
+                    )?;
+                let comparison = stats::compare(
+                    bin.clone(),
+                    unit,
+                    lower_is_better,
+                    summarize(&base_values),
+                    summarize(&candidate_values),
+                );
+                (
+                    vec![comparison],
+                    Vec::new(),
+                    Vec::new(),
+                    "binary".to_owned(),
+                    format!("binary '{bin}'"),
+                    Some(report::metric_label(metric)),
+                    cli.reps.to_string(),
+                )
+            }
+            Mode::Criterion { bench } => {
+                if cli.reps != 5 {
+                    eprintln!(
+                        "warning: --reps is ignored in criterion mode (criterion samples internally)"
+                    );
+                }
+                builder::build_bench(&base_ws, &cli.package, bench, &cli.profile)?;
+                check_cancelled()?;
+                builder::build_bench(&candidate_ws, &cli.package, bench, &cli.profile)?;
+                check_cancelled()?;
+                runner::run_criterion(
+                    &base_ws,
+                    &cli.package,
+                    bench,
+                    &cli.profile,
+                    &base.short,
+                    &pin,
+                )?;
+                check_cancelled()?;
+                runner::run_criterion(
+                    &candidate_ws,
+                    &cli.package,
+                    bench,
+                    &cli.profile,
+                    &candidate.short,
+                    &pin,
+                )?;
+                check_cancelled()?;
+
+                let base_results = criterion::collect(
+                    &builder::target_dir(&base_ws),
+                    &format!("bcmp-{}", base.short),
+                )?;
+                let candidate_results = criterion::collect(
+                    &builder::target_dir(&candidate_ws),
+                    &format!("bcmp-{}", candidate.short),
+                )?;
+                let (comparisons, only_base, only_candidate) =
+                    compare_criterion(base_results, candidate_results);
+                (
+                    comparisons,
+                    only_base,
+                    only_candidate,
+                    "criterion".to_owned(),
+                    format!("criterion bench '{bench}'"),
+                    None,
+                    "criterion-internal".to_owned(),
+                )
+            }
+        };
+
+    if cli.json {
+        report::print_json(report::JsonReportInput {
+            mode: &mode_name,
+            package: &cli.package,
+            profile: &cli.profile,
+            base: &base,
+            candidate: &candidate,
+            pinned_core,
+            dirty,
+            results: &results,
+            only_in_base: &only_in_base,
+            only_in_candidate: &only_in_candidate,
+        })?;
+    } else {
+        report::print_human(report::HumanReport {
+            package: &cli.package,
+            profile: &cli.profile,
+            mode_label,
+            metric_label,
+            reps_label,
+            pinned_label,
+            base: &base,
+            candidate: &candidate,
+            dirty,
+            results: &results,
+            only_in_base: &only_in_base,
+            only_in_candidate: &only_in_candidate,
+        });
+    }
+
+    Ok(())
+}
+
+fn resolve_work_dir(explicit: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+    if let Some(cache) = std::env::var_os("XDG_CACHE_HOME") {
+        return Ok(PathBuf::from(cache).join("cargo-bench-compare"));
+    }
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| anyhow!("HOME is unset and --work-dir was not provided"))?;
+    Ok(PathBuf::from(home)
+        .join(".cache")
+        .join("cargo-bench-compare"))
+}
+
+fn check_cancelled() -> Result<()> {
+    if CANCELLED.load(Ordering::SeqCst) {
+        Err(anyhow!("interrupted"))
+    } else {
+        Ok(())
+    }
+}
+
+fn compare_criterion(
+    base: Vec<criterion::CriterionResult>,
+    candidate: Vec<criterion::CriterionResult>,
+) -> (Vec<stats::Comparison>, Vec<String>, Vec<String>) {
+    let base_map = base
+        .into_iter()
+        .map(|r| (r.full_id.clone(), r))
+        .collect::<BTreeMap<_, _>>();
+    let candidate_map = candidate
+        .into_iter()
+        .map(|r| (r.full_id.clone(), r))
+        .collect::<BTreeMap<_, _>>();
+    let base_ids = base_map.keys().cloned().collect::<BTreeSet<_>>();
+    let candidate_ids = candidate_map.keys().cloned().collect::<BTreeSet<_>>();
+    let mut comparisons = Vec::new();
+    for id in base_ids.intersection(&candidate_ids) {
+        let b = &base_map[id];
+        let c = &candidate_map[id];
+        comparisons.push(stats::compare(
+            id.clone(),
+            "ns".to_owned(),
+            true,
+            Summary {
+                n: 1,
+                mean: b.mean_ns,
+                std_dev: b.std_dev_ns,
+                min: b.mean_ns,
+                max: b.mean_ns,
+            },
+            Summary {
+                n: 1,
+                mean: c.mean_ns,
+                std_dev: c.std_dev_ns,
+                min: c.mean_ns,
+                max: c.mean_ns,
+            },
+        ));
+    }
+    let only_base = base_ids.difference(&candidate_ids).cloned().collect();
+    let only_candidate = candidate_ids.difference(&base_ids).cloned().collect();
+    (comparisons, only_base, only_candidate)
+}
