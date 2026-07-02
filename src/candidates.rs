@@ -42,7 +42,11 @@ fn revs(cwd: &Path) -> Result<Vec<String>> {
         cwd,
         &[],
     )?;
-    let mut values = Vec::from(["HEAD".to_owned()]);
+    let mut values = Vec::from([
+        ":worktree".to_owned(),
+        ":merge-base".to_owned(),
+        "HEAD".to_owned(),
+    ]);
     for line in output
         .lines()
         .map(str::trim)
@@ -201,6 +205,8 @@ inherits = "release"
         git(&dir, &["tag", "fixture-b"]);
 
         let revs = candidates(CandidateKind::Revs, &dir).unwrap();
+        assert!(revs.contains(&":worktree".to_owned()));
+        assert!(revs.contains(&":merge-base".to_owned()));
         assert!(revs.contains(&"HEAD".to_owned()));
         assert!(revs.contains(&"main".to_owned()));
         assert!(revs.contains(&"fixture-a".to_owned()));

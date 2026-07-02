@@ -18,8 +18,8 @@ export extern "cargo bench-compare" [
   --bench: string@"nu-complete bcmp benches"         # criterion benchmark target to run (criterion mode)
   --bin: string@"nu-complete bcmp bins"              # binary target to run (binary mode)
   --args: string                                     # arguments for the binary, split on whitespace (binary mode)
-  --rev: string@"nu-complete bcmp revs"              # candidate revision to benchmark (commit, branch, or tag)
-  --rev-base: string@"nu-complete bcmp revs"         # base revision to compare against (default: HEAD)
+  --rev: string@"nu-complete bcmp revs"              # candidate revision; ':worktree' snapshots uncommitted changes (default)
+  --rev-base: string@"nu-complete bcmp revs"         # base revision; ':merge-base' = fork point of HEAD and the default branch (default)
   --reps: int                                        # measurement runs per revision (binary mode; default: 5)
   --metric-regex: string                             # regex with one capture group extracting a numeric metric from output; default is wall-clock time
   --metric-dir: string@"nu-complete bcmp metric-dir" # whether a higher or lower metric is better; decides improved vs regressed
@@ -38,8 +38,8 @@ export extern "cargo-bench-compare" [
   --bench: string@"nu-complete bcmp benches"         # criterion benchmark target to run (criterion mode)
   --bin: string@"nu-complete bcmp bins"              # binary target to run (binary mode)
   --args: string                                     # arguments for the binary, split on whitespace (binary mode)
-  --rev: string@"nu-complete bcmp revs"              # candidate revision to benchmark (commit, branch, or tag)
-  --rev-base: string@"nu-complete bcmp revs"         # base revision to compare against (default: HEAD)
+  --rev: string@"nu-complete bcmp revs"              # candidate revision; ':worktree' snapshots uncommitted changes (default)
+  --rev-base: string@"nu-complete bcmp revs"         # base revision; ':merge-base' = fork point of HEAD and the default branch (default)
   --reps: int                                        # measurement runs per revision (binary mode; default: 5)
   --metric-regex: string                             # regex with one capture group extracting a numeric metric from output; default is wall-clock time
   --metric-dir: string@"nu-complete bcmp metric-dir" # whether a higher or lower metric is better; decides improved vs regressed

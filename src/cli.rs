@@ -30,12 +30,12 @@ pub struct Cli {
     /// Additional arguments passed to the binary verbatim
     #[arg(last = true, requires = "bin")]
     pub trailing_args: Vec<String>,
-    /// Candidate revision to benchmark (commit, branch, or tag)
+    /// Candidate revision: commit, branch, tag, or ':worktree' for a snapshot of the working tree [default: :worktree — falls back to HEAD when the tree is clean]
     #[arg(long = "rev")]
     pub rev: Option<String>,
-    /// Base revision to compare the candidate against
-    #[arg(long = "rev-base", default_value = "HEAD")]
-    pub rev_base: String,
+    /// Base revision: commit, branch, tag, or ':merge-base' for the fork point of HEAD and the default branch [default: :merge-base]
+    #[arg(long = "rev-base")]
+    pub rev_base: Option<String>,
     /// Measurement runs per revision (binary mode; ignored in criterion mode) [default: 5]
     #[arg(long = "reps", value_parser = clap::value_parser!(u32).range(1..))]
     pub reps: Option<u32>,
@@ -181,12 +181,6 @@ impl Cli {
         self.package
             .as_deref()
             .ok_or_else(|| anyhow!("--package <PACKAGE> is required"))
-    }
-
-    pub fn rev(&self) -> Result<&str> {
-        self.rev
-            .as_deref()
-            .ok_or_else(|| anyhow!("--rev <REV> is required"))
     }
 }
 

@@ -36,25 +36,45 @@ fn real_main() -> Result<()> {
     }
     let mode = cli.mode()?;
     let package = cli.package()?;
-    let rev = cli.rev()?;
+    let rev_spec = cli.rev.clone().unwrap_or_else(|| ":worktree".to_owned());
+    let base_spec = cli
+        .rev_base
+        .clone()
+        .unwrap_or_else(|| ":merge-base".to_owned());
+    if rev_spec == ":worktree" && base_spec == ":worktree" {
+        return Err(anyhow!(
+            "candidate and base are both ':worktree'; nothing to compare"
+        ));
+    }
 
     ctrlc::set_handler(|| CANCELLED.store(true, Ordering::SeqCst))?;
 
     let repo_root = git::repo_root()?;
     let workspace = workspace::load(&repo_root, package)?;
-    let base = git::resolve_rev(&repo_root, &cli.rev_base)?;
-    let candidate = git::resolve_rev(&repo_root, rev)?;
+    let dirty = git::is_dirty(&repo_root)?;
+    let base = git::resolve_spec(&repo_root, &base_spec)?;
+    let candidate = git::resolve_spec(&repo_root, &rev_spec)?;
     if base.sha == candidate.sha {
+        let hint = if cli.rev.is_none() && cli.rev_base.is_none() {
+            " (working tree is clean and HEAD is already the merge base; commit something or pass --rev/--rev-base)"
+        } else {
+            ""
+        };
         return Err(anyhow!(
-            "base and candidate both resolve to {}; nothing to compare",
+            "base and candidate both resolve to {}; nothing to compare{hint}",
             base.sha
         ));
     }
-    let dirty = git::is_dirty(&repo_root)?;
     if dirty {
-        eprintln!(
-            "warning: working tree is dirty; uncommitted local changes are NOT included in either side"
-        );
+        if base.spec == "worktree" || candidate.spec == "worktree" {
+            eprintln!(
+                "note: benchmarking a snapshot of the dirty working tree (staged, unstaged, and untracked changes included)"
+            );
+        } else {
+            eprintln!(
+                "warning: working tree is dirty; uncommitted local changes are NOT included in either side"
+            );
+        }
     }
 
     let work_dir_root = resolve_work_dir(cli.work_dir.clone())?;
