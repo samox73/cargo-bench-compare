@@ -78,16 +78,12 @@ fn real_main() -> Result<()> {
             base.sha
         ));
     }
-    if dirty {
-        if base.spec == "worktree" || candidate.spec == "worktree" {
-            eprintln!(
-                "note: benchmarking a snapshot of the dirty working tree (staged, unstaged, and untracked changes included)"
-            );
-        } else {
-            eprintln!(
-                "warning: working tree is dirty; uncommitted local changes are NOT included in either side"
-            );
-        }
+    // benchmarking the dirty worktree via :worktree is the primary workflow and
+    // needs no note; only warn when local changes end up in neither side
+    if dirty && base.spec != "worktree" && candidate.spec != "worktree" {
+        eprintln!(
+            "warning: working tree is dirty; uncommitted local changes are NOT included in either side"
+        );
     }
 
     let work_dir_root = resolve_work_dir(cli.work_dir.clone())?;
@@ -305,7 +301,6 @@ fn real_main() -> Result<()> {
             base: &base,
             candidate: &candidate,
             build: build_mode,
-            dirty,
             results: &results,
             only_in_base: &only_in_base,
             only_in_candidate: &only_in_candidate,

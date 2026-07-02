@@ -38,48 +38,41 @@ pub struct HumanReport<'a> {
     pub base: &'a ResolvedRev,
     pub candidate: &'a ResolvedRev,
     pub build: &'a str,
-    pub dirty: bool,
     pub results: &'a [Comparison],
     pub only_in_base: &'a [String],
     pub only_in_candidate: &'a [String],
 }
 
 pub fn print_human(r: HumanReport<'_>) {
-    println!(
-        "comparing {} ({}, candidate) vs {} ({}, base)",
-        r.candidate.spec, r.candidate.short, r.base.spec, r.base.short
-    );
-    println!(
-        "package: {}   mode: {}   profile: {}   reps: {}",
-        r.package, r.mode_label, r.profile, r.reps_label
-    );
+    let mut settings = vec![
+        ("package", r.package.to_owned()),
+        ("mode", r.mode_label),
+        ("profile", r.profile.to_owned()),
+        ("reps", r.reps_label),
+    ];
     if let Some(metric) = r.metric_label {
-        println!("metric: {metric}");
+        settings.push(("metric", metric));
     }
-    let governor = r.governor.map(|gov| {
-        if r.governor_set_by_tool {
-            format!("   governor: {gov} (set for this run)")
-        } else {
-            format!("   governor: {gov}")
-        }
-    });
-    println!(
-        "pinning: {}{}   build: {}   RUSTFLAGS=\"-C target-cpu=native\"",
-        r.pinned_label,
-        governor.as_deref().unwrap_or(""),
-        r.build
-    );
-    if r.dirty {
-        println!(
-            "warning: working tree is dirty; uncommitted local changes are NOT included in either side"
-        );
+    settings.push(("pinning", r.pinned_label));
+    if let Some(governor) = r.governor {
+        settings.push((
+            "governor",
+            if r.governor_set_by_tool {
+                format!("{governor} (set for this run)")
+            } else {
+                governor
+            },
+        ));
     }
-    println!();
+    settings.push(("build", r.build.to_owned()));
+    settings.push(("RUSTFLAGS", "-C target-cpu=native".to_owned()));
+    settings.push(("base", format!("{} ({})", r.base.spec, r.base.short)));
+    settings.push(("rev", format!("{} ({})", r.candidate.spec, r.candidate.short)));
 
     let mut rows = vec![[
         "benchmark".to_owned(),
         "base".to_owned(),
-        "candidate".to_owned(),
+        "rev".to_owned(),
         "Δ".to_owned(),
         "verdict".to_owned(),
     ]];
@@ -107,29 +100,167 @@ pub fn print_human(r: HumanReport<'_>) {
             verdict_text(&cmp.verdict).to_owned(),
         ]);
     }
-    let widths = (0..5)
-        .map(|col| rows.iter().map(|row| row[col].len()).max().unwrap_or(0))
-        .collect::<Vec<_>>();
-    for row in rows {
-        println!(
-            "{:<w0$}  {:<w1$}  {:<w2$}  {:>w3$}  {}",
-            row[0],
-            row[1],
-            row[2],
-            row[3],
-            row[4],
-            w0 = widths[0],
-            w1 = widths[1],
-            w2 = widths[2],
-            w3 = widths[3],
-        );
-    }
+    print!("{}", report_table(&settings, &rows));
     if !r.only_in_base.is_empty() {
         println!("only in base: {}", r.only_in_base.join(", "));
     }
     if !r.only_in_candidate.is_empty() {
         println!("only in candidate: {}", r.only_in_candidate.join(", "));
     }
+}
+
+/// One box: key/value settings on top, results below a section separator.
+/// Results are columns when they fit the terminal, otherwise one key/value
+/// section per benchmark (piped output always uses columns).
+fn report_table(settings: &[(&str, String)], results: &[[String; 5]]) -> String {
+    let table = horizontal_table(settings, results);
+    let table_w = table.lines().next().map_or(0, |l| l.chars().count());
+    match terminal_width() {
+        Some(term_w) if table_w > term_w => vertical_table(settings, results),
+        _ => table,
+    }
+}
+
+#[cfg(unix)]
+fn terminal_width() -> Option<usize> {
+    let mut ws = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: TIOCGWINSZ only fills in the winsize out-param
+    let rc = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) };
+    (rc == 0 && ws.ws_col > 0).then_some(ws.ws_col as usize)
+}
+
+#[cfg(not(unix))]
+fn terminal_width() -> Option<usize> {
+    None
+}
+
+/// The value column of the settings section spans the four result columns.
+/// The first column (settings keys / benchmark names) is shared.
+fn horizontal_table(settings: &[(&str, String)], results: &[[String; 5]]) -> String {
+    // pad by char count, not byte length, so multi-byte cells (±, µ) stay aligned
+    let width = |s: &str| s.chars().count();
+    let key_w = settings
+        .iter()
+        .map(|(k, _)| width(k))
+        .chain(results.iter().map(|row| width(&row[0])))
+        .max()
+        .unwrap_or(0);
+    let mut col_w = (1..5)
+        .map(|col| results.iter().map(|row| width(&row[col])).max().unwrap_or(0))
+        .collect::<Vec<_>>();
+    // the settings value column spans the four result columns (each padded by
+    // one space per side, plus three `│` separators); widen the last result
+    // column if the longest settings value needs more room than the results
+    let val_w_min = settings.iter().map(|(_, v)| width(v)).max().unwrap_or(0);
+    let spanned = |col_w: &[usize]| col_w.iter().sum::<usize>() + 9;
+    if val_w_min > spanned(&col_w) {
+        col_w[3] += val_w_min - spanned(&col_w);
+    }
+    let val_w = spanned(&col_w);
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "┌─{}─┬─{}─┐\n",
+        "─".repeat(key_w),
+        "─".repeat(val_w)
+    ));
+    for (key, value) in settings {
+        out.push_str(&format!("│ {key:<key_w$} │ {value:<val_w$} │\n"));
+    }
+    out.push_str(&format!(
+        "├─{}─┼─{}─┬─{}─┬─{}─┬─{}─┤\n",
+        "─".repeat(key_w),
+        "─".repeat(col_w[0]),
+        "─".repeat(col_w[1]),
+        "─".repeat(col_w[2]),
+        "─".repeat(col_w[3])
+    ));
+    for (i, row) in results.iter().enumerate() {
+        if i == 1 {
+            out.push_str(&format!(
+                "├─{}─┼─{}─┼─{}─┼─{}─┼─{}─┤\n",
+                "─".repeat(key_w),
+                "─".repeat(col_w[0]),
+                "─".repeat(col_w[1]),
+                "─".repeat(col_w[2]),
+                "─".repeat(col_w[3])
+            ));
+        }
+        out.push_str(&format!(
+            "│ {:<key_w$} │ {:<w1$} │ {:<w2$} │ {:>w3$} │ {:<w4$} │\n",
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            row[4],
+            w1 = col_w[0],
+            w2 = col_w[1],
+            w3 = col_w[2],
+            w4 = col_w[3],
+        ));
+    }
+    out.push_str(&format!(
+        "└─{}─┴─{}─┴─{}─┴─{}─┴─{}─┘\n",
+        "─".repeat(key_w),
+        "─".repeat(col_w[0]),
+        "─".repeat(col_w[1]),
+        "─".repeat(col_w[2]),
+        "─".repeat(col_w[3])
+    ));
+    out
+}
+
+/// Narrow-terminal layout: two columns throughout, one key/value section per
+/// benchmark (labelled with the result header), sections split by separators.
+fn vertical_table(settings: &[(&str, String)], results: &[[String; 5]]) -> String {
+    let header = &results[0];
+    let mut sections = vec![
+        settings
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect::<Vec<_>>(),
+    ];
+    for row in &results[1..] {
+        sections.push(
+            (0..5)
+                .map(|col| (header[col].as_str(), row[col].clone()))
+                .collect(),
+        );
+    }
+
+    let width = |s: &str| s.chars().count();
+    let cells = || sections.iter().flatten();
+    let key_w = cells().map(|(k, _)| width(k)).max().unwrap_or(0);
+    let val_w = cells().map(|(_, v)| width(v)).max().unwrap_or(0);
+    let mut out = String::new();
+    out.push_str(&format!(
+        "┌─{}─┬─{}─┐\n",
+        "─".repeat(key_w),
+        "─".repeat(val_w)
+    ));
+    for (i, section) in sections.iter().enumerate() {
+        if i > 0 {
+            out.push_str(&format!(
+                "├─{}─┼─{}─┤\n",
+                "─".repeat(key_w),
+                "─".repeat(val_w)
+            ));
+        }
+        for (key, value) in section {
+            out.push_str(&format!("│ {key:<key_w$} │ {value:<val_w$} │\n"));
+        }
+    }
+    out.push_str(&format!(
+        "└─{}─┴─{}─┘\n",
+        "─".repeat(key_w),
+        "─".repeat(val_w)
+    ));
+    out
 }
 
 fn verdict_text(v: &Verdict) -> &'static str {
@@ -223,5 +354,64 @@ mod tests {
     fn seconds_use_magnitude_adaptive_formatting() {
         assert_eq!(fmt_value(0.105, "s"), "105.00 ms");
         assert_eq!(fmt_value(0.0004, "s"), "400.00 µs");
+    }
+
+    fn sample_results() -> Vec<[String; 5]> {
+        vec![
+            ["benchmark", "base", "rev", "Δ", "verdict"].map(str::to_owned),
+            ["a-benchmark-with-a-long-name", "1.0 ± 0.1", "1.1 ± 0.2", "+10.0%", "improved"]
+                .map(str::to_owned),
+        ]
+    }
+
+    #[test]
+    fn horizontal_table_draws_one_aligned_box() {
+        let settings = vec![
+            ("package", "rmc-minimal".to_owned()),
+            ("metric", "µs (multi-byte value)".to_owned()),
+        ];
+        let results = sample_results();
+        let table = horizontal_table(&settings, &results);
+        let lines = table.lines().collect::<Vec<_>>();
+        // 2 settings + 2 results + top, section separator, header separator, bottom
+        assert_eq!(lines.len(), 8);
+        assert!(lines[0].starts_with('┌') && lines[0].ends_with('┐'));
+        assert!(lines[1].contains("│ package"));
+        assert!(lines[3].starts_with('├') && lines[3].contains('┼') && lines[3].contains('┬'));
+        assert!(lines[4].contains("│ benchmark"));
+        assert!(lines[5].starts_with('├') && !lines[5].contains('┬'), "header separator");
+        assert!(lines[6].contains("+10.0% │"), "Δ column right-aligned");
+        assert!(lines[7].starts_with('└') && lines[7].ends_with('┘'));
+        let width = lines[0].chars().count();
+        for line in &lines {
+            assert_eq!(line.chars().count(), width, "misaligned row: {line}");
+        }
+
+        // a very long settings value widens the results section instead of overflowing
+        let settings = vec![("metric", "x".repeat(120))];
+        let table = horizontal_table(&settings, &results);
+        let lines = table.lines().collect::<Vec<_>>();
+        let width = lines[0].chars().count();
+        for line in &lines {
+            assert_eq!(line.chars().count(), width, "misaligned row: {line}");
+        }
+    }
+
+    #[test]
+    fn vertical_table_stacks_results_as_labelled_sections() {
+        let settings = vec![("package", "rmc-minimal".to_owned())];
+        let mut results = sample_results();
+        results.push(["fib_20", "2.0 ± 0.1", "1.9 ± 0.2", "-5.0%", "improved"].map(str::to_owned));
+        let table = vertical_table(&settings, &results);
+        let lines = table.lines().collect::<Vec<_>>();
+        // top + 1 setting + 2 benchmarks of (separator + 5 rows) + bottom
+        assert_eq!(lines.len(), 15);
+        assert_eq!(lines.iter().filter(|l| l.starts_with('├')).count(), 2);
+        assert!(lines.iter().any(|l| l.starts_with("│ benchmark") && l.contains("fib_20")));
+        assert!(lines.iter().any(|l| l.starts_with("│ Δ") && l.contains("-5.0%")));
+        let width = lines[0].chars().count();
+        for line in &lines {
+            assert_eq!(line.chars().count(), width, "misaligned row: {line}");
+        }
     }
 }

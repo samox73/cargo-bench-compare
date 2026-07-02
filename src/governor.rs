@@ -104,7 +104,12 @@ impl GovernorGuard {
 
 impl Drop for GovernorGuard {
     fn drop(&mut self) {
-        if let Err(err) = write_governor(&self.sysfs, self.core, &self.previous) {
+        if let Err(err) = write_governor(
+            &self.sysfs,
+            self.core,
+            &self.previous,
+            "restoring previous governor",
+        ) {
             eprintln!(
                 "warning: failed to restore CPU governor on core {} to '{}': {err}. Fix manually: echo {} | sudo tee {}",
                 self.core,
@@ -142,7 +147,7 @@ pub fn set_performance(sysfs: &Path, core: u32) -> Result<SetOutcome> {
         }
     }
 
-    match write_governor(sysfs, core, "performance") {
+    match write_governor(sysfs, core, "performance", "will be restored on exit") {
         Ok(()) => Ok(SetOutcome::Changed(GovernorGuard {
             sysfs: sysfs.to_owned(),
             core,
@@ -152,7 +157,7 @@ pub fn set_performance(sysfs: &Path, core: u32) -> Result<SetOutcome> {
     }
 }
 
-fn write_governor(sysfs: &Path, core: u32, value: &str) -> Result<()> {
+fn write_governor(sysfs: &Path, core: u32, value: &str, why: &str) -> Result<()> {
     let path = governor_path(sysfs, core);
     match std::fs::write(&path, value) {
         Ok(()) => return Ok(()),
@@ -163,7 +168,11 @@ fn write_governor(sysfs: &Path, core: u32, value: &str) -> Result<()> {
         }
     }
 
-    eprintln!("requesting sudo to write the CPU governor (will be restored on exit)");
+    // announce sudo only when it will actually prompt; with cached credentials
+    // (typical for the restore on exit) or NOPASSWD the write happens silently
+    if !sudo_is_passwordless() {
+        eprintln!("requesting sudo to write the CPU governor ({why})");
+    }
     let mut child = Command::new("sudo")
         .arg("tee")
         .arg(&path)
@@ -182,6 +191,15 @@ fn write_governor(sysfs: &Path, core: u32, value: &str) -> Result<()> {
         return Err(anyhow!("sudo tee {} failed", path.display()));
     }
     Ok(())
+}
+
+fn sudo_is_passwordless() -> bool {
+    Command::new("sudo")
+        .args(["-n", "true"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 #[cfg(test)]

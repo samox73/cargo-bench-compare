@@ -90,22 +90,8 @@ pub fn run_criterion(
             }
         }
     });
-    let mut stderr = child.stderr.take().expect("stderr piped");
-    let stderr_thread = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let mut buf = [0_u8; 8192];
-        loop {
-            match std::io::Read::read(&mut stderr, &mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    bytes.extend_from_slice(&buf[..n]);
-                    let _ = std::io::Write::write_all(&mut std::io::stderr(), &buf[..n]);
-                }
-                Err(_) => break,
-            }
-        }
-        bytes
-    });
+    let stderr = child.stderr.take().expect("stderr piped");
+    let stderr_thread = std::thread::spawn(move || builder::tee_stderr_filtered(stderr));
     let status = child.wait()?;
     let _ = stdout_thread.join();
     let stderr = stderr_thread.join().unwrap_or_default();

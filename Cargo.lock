@@ -90,6 +90,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "ctrlc",
+ "libc",
  "regex",
  "serde",
  "serde_json",
