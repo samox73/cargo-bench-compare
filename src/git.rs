@@ -117,20 +117,16 @@ impl WorktreeGuard {
             &[],
         )?;
 
-        if repo_root.join(".gitmodules").exists() {
-            run_capture(
-                "git",
-                &["-C", &wt, "submodule", "update", "--init", "--recursive"],
-                &path,
-                &[],
-            )?;
+        let submodule_update = run_capture(
+            "git",
+            &["-C", &wt, "submodule", "update", "--init", "--recursive"],
+            &path,
+            &[],
+        );
+        if path.join(".gitmodules").exists() {
+            submodule_update?;
         } else {
-            let _ = run_capture(
-                "git",
-                &["-C", &wt, "submodule", "update", "--init", "--recursive"],
-                &path,
-                &[],
-            );
+            let _ = submodule_update;
         }
 
         Ok(WorktreeGuard {

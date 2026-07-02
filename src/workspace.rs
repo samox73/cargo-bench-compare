@@ -6,8 +6,6 @@ use serde_json::Value;
 use crate::git;
 
 pub struct WorkspaceInfo {
-    pub repo_root: PathBuf,
-    pub ws_root: PathBuf,
     pub ws_rel: PathBuf,
 }
 
@@ -50,11 +48,7 @@ pub fn load(repo_root: &Path, package: &str) -> Result<WorkspaceInfo> {
                 repo_root.display()
             )
         })?;
-    Ok(WorkspaceInfo {
-        repo_root: repo_root.to_owned(),
-        ws_root,
-        ws_rel,
-    })
+    Ok(WorkspaceInfo { ws_rel })
 }
 
 impl WorkspaceInfo {

@@ -33,7 +33,6 @@ fn real_main() -> Result<()> {
 
     let repo_root = git::repo_root()?;
     let workspace = workspace::load(&repo_root, &cli.package)?;
-    let _ = (&workspace.repo_root, &workspace.ws_root);
     let base = git::resolve_rev(&repo_root, &cli.rev_base)?;
     let candidate = git::resolve_rev(&repo_root, &cli.rev)?;
     if base.sha == candidate.sha {
@@ -75,6 +74,7 @@ fn real_main() -> Result<()> {
     let (results, only_in_base, only_in_candidate, mode_name, mode_label, metric_label, reps_label) =
         match &mode {
             Mode::Binary { bin, args, metric } => {
+                let reps = cli.reps.unwrap_or(5);
                 let exe_base = builder::build_bin(&base_ws, &cli.package, bin, &cli.profile)?;
                 check_cancelled()?;
                 let exe_candidate =
@@ -94,7 +94,7 @@ fn real_main() -> Result<()> {
                             cwd: &candidate_ws,
                             pin: &pin,
                         },
-                        cli.reps,
+                        reps,
                         metric,
                         &CANCELLED,
                     )?;
@@ -112,11 +112,11 @@ fn real_main() -> Result<()> {
                     "binary".to_owned(),
                     format!("binary '{bin}'"),
                     Some(report::metric_label(metric)),
-                    cli.reps.to_string(),
+                    reps.to_string(),
                 )
             }
             Mode::Criterion { bench } => {
-                if cli.reps != 5 {
+                if cli.reps.is_some() {
                     eprintln!(
                         "warning: --reps is ignored in criterion mode (criterion samples internally)"
                     );

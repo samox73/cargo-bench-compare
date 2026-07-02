@@ -26,11 +26,15 @@ pub struct Cli {
     pub rev: String,
     #[arg(long = "rev-base", default_value = "HEAD")]
     pub rev_base: String,
-    #[arg(long = "reps", default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..))]
-    pub reps: u32,
+    #[arg(long = "reps", value_parser = clap::value_parser!(u32).range(1..))]
+    pub reps: Option<u32>,
     #[arg(long = "metric-regex", requires = "bin")]
     pub metric_regex: Option<String>,
-    #[arg(long = "metric-dir", default_value = "higher")]
+    #[arg(
+        long = "metric-dir",
+        default_value = "higher",
+        requires = "metric_regex"
+    )]
     pub metric_dir: MetricDir,
     #[arg(long = "runs-on-core", default_value_t = 0)]
     pub runs_on_core: u32,

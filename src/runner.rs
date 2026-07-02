@@ -17,25 +17,25 @@ pub fn pin_prefix(core: u32, no_pin: bool) -> Vec<String> {
         return Vec::new();
     }
     if !cfg!(target_os = "linux") {
-        warn_taskset_once();
+        warn_pinning_once("CPU pinning not supported on this platform");
         return Vec::new();
     }
-    let available = Command::new("which")
-        .arg("taskset")
+    let available = Command::new("taskset")
+        .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|s| s.success());
     if !available {
-        warn_taskset_once();
+        warn_pinning_once("taskset unavailable");
         return Vec::new();
     }
     vec!["taskset".to_owned(), "-c".to_owned(), core.to_string()]
 }
 
-fn warn_taskset_once() {
+fn warn_pinning_once(reason: &str) {
     if !WARNED_TASKSET.swap(true, Ordering::SeqCst) {
-        eprintln!("warning: taskset unavailable; running unpinned");
+        eprintln!("warning: {reason}; running unpinned");
     }
 }
 
