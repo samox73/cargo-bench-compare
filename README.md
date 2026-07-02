@@ -120,8 +120,9 @@ worktrees. Warm caches can grow to several GB because each side has its own targ
 directory; reclaim them with:
 
 ```bash
-cargo bench-compare clean
-cargo bench-compare clean --all
+cargo bench-compare cache list
+cargo bench-compare cache clean
+cargo bench-compare cache clean --all
 ```
 
 The warm worktrees are normal git worktrees and appear in `git worktree list`.

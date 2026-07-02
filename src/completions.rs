@@ -12,20 +12,12 @@ def "nu-complete bcmp benches" []  { ^cargo-bench-compare __candidates benches |
 def "nu-complete bcmp revs" []     { ^cargo-bench-compare __candidates revs | lines }
 def "nu-complete bcmp profiles" [] { ^cargo-bench-compare __candidates profiles | lines }
 def "nu-complete bcmp metric-dir" [] { ["higher", "lower"] }
-def "nu-complete bcmp commands" [context?: string] {
-  let context = ($context | default "")
-  if ($context | str contains " cache ") {
-    ["list", "clean"]
-  } else if ($context | str contains " completions ") {
-    ["bash", "zsh", "fish", "elvish", "powershell", "nushell"]
-  } else {
-    ["completions", "cache"]
-  }
-}
+def "nu-complete bcmp shells" [] { ["bash", "zsh", "fish", "elvish", "powershell", "nushell"] }
+# empty list = no suggestions; suppresses nushell's file-path fallback where files are
+# never valid arguments (returning null instead would re-enable the fallback)
+def "nu-complete bcmp nothing" [] { [] }
 
 export extern "cargo bench-compare" [
-  command?: string@"nu-complete bcmp commands"       # completions | cache
-  subcommand?: string@"nu-complete bcmp commands"    # cache: list | clean; completions: shell
   --package(-p): string@"nu-complete bcmp packages"  # cargo package to benchmark
   --bench: string@"nu-complete bcmp benches"         # criterion benchmark target to run (criterion mode)
   --bin: string@"nu-complete bcmp bins"              # binary target to run (binary mode)
@@ -47,9 +39,31 @@ export extern "cargo bench-compare" [
   ...args: string                                    # trailing args passed to the binary verbatim (after --)
 ]
 
+export extern "cargo bench-compare completions" [
+  shell: string@"nu-complete bcmp shells"             # bash | zsh | fish | elvish | powershell | nushell
+  --install                                           # write the script to the conventional location instead of stdout
+  --work-dir: path                                    # parent directory for temporary worktrees (default: ~/.cache/cargo-bench-compare)
+  --help(-h)                                          # print help
+]
+
+export extern "cargo bench-compare cache" [
+  subcommand?: string@"nu-complete bcmp nothing" # `list` and `clean` are suggested natively from the nested externs
+  --work-dir: path                                    # parent directory for temporary worktrees (default: ~/.cache/cargo-bench-compare)
+  --help(-h)                                          # print help
+]
+
+export extern "cargo bench-compare cache list" [
+  --work-dir: path                                    # parent directory for temporary worktrees (default: ~/.cache/cargo-bench-compare)
+  --help(-h)                                          # print help
+]
+
+export extern "cargo bench-compare cache clean" [
+  --all                                               # clean the caches of all repos, not just the current one
+  --work-dir: path                                    # parent directory for temporary worktrees (default: ~/.cache/cargo-bench-compare)
+  --help(-h)                                          # print help
+]
+
 export extern "cargo-bench-compare" [
-  command?: string@"nu-complete bcmp commands"       # completions | cache
-  subcommand?: string@"nu-complete bcmp commands"    # cache: list | clean; completions: shell
   --package(-p): string@"nu-complete bcmp packages"  # cargo package to benchmark
   --bench: string@"nu-complete bcmp benches"         # criterion benchmark target to run (criterion mode)
   --bin: string@"nu-complete bcmp bins"              # binary target to run (binary mode)
@@ -69,6 +83,30 @@ export extern "cargo-bench-compare" [
   --work-dir: path                                   # parent directory for temporary worktrees (default: ~/.cache/cargo-bench-compare)
   --help(-h)                                         # print help
   ...args: string                                    # trailing args passed to the binary verbatim (after --)
+]
+
+export extern "cargo-bench-compare completions" [
+  shell: string@"nu-complete bcmp shells"             # bash | zsh | fish | elvish | powershell | nushell
+  --install                                           # write the script to the conventional location instead of stdout
+  --work-dir: path                                    # parent directory for temporary worktrees (default: ~/.cache/cargo-bench-compare)
+  --help(-h)                                          # print help
+]
+
+export extern "cargo-bench-compare cache" [
+  subcommand?: string@"nu-complete bcmp nothing" # `list` and `clean` are suggested natively from the nested externs
+  --work-dir: path                                    # parent directory for temporary worktrees (default: ~/.cache/cargo-bench-compare)
+  --help(-h)                                          # print help
+]
+
+export extern "cargo-bench-compare cache list" [
+  --work-dir: path                                    # parent directory for temporary worktrees (default: ~/.cache/cargo-bench-compare)
+  --help(-h)                                          # print help
+]
+
+export extern "cargo-bench-compare cache clean" [
+  --all                                               # clean the caches of all repos, not just the current one
+  --work-dir: path                                    # parent directory for temporary worktrees (default: ~/.cache/cargo-bench-compare)
+  --help(-h)                                          # print help
 ]
 "#;
 
@@ -179,6 +217,10 @@ mod tests {
     #[test]
     fn nu_module_covers_all_long_flags() {
         let cmd = crate::cli::command();
+        assert_nu_module_covers_long_flags(&cmd);
+    }
+
+    fn assert_nu_module_covers_long_flags(cmd: &clap::Command) {
         for arg in cmd.get_arguments() {
             if let Some(long) = arg.get_long() {
                 if long == "version" {
@@ -190,17 +232,25 @@ mod tests {
                 );
             }
         }
+        for sub in cmd.get_subcommands() {
+            assert_nu_module_covers_long_flags(sub);
+        }
     }
 
     #[test]
-    fn nu_module_completes_cache_subcommands_without_exporting_them() {
+    fn nu_module_exports_nested_commands_for_scoped_help() {
         for needle in [
-            "nu-complete bcmp commands",
-            r#"str contains " cache ""#,
-            r#"str contains " completions ""#,
-            r#"["completions", "cache"]"#,
-            r#"["list", "clean"]"#,
+            "nu-complete bcmp shells",
             r#"["bash", "zsh", "fish", "elvish", "powershell", "nushell"]"#,
+            r#"def "nu-complete bcmp nothing" [] { [] }"#,
+            r#"subcommand?: string@"nu-complete bcmp nothing""#,
+            r#"export extern "cargo bench-compare cache""#,
+            r#"export extern "cargo bench-compare cache list""#,
+            r#"export extern "cargo bench-compare cache clean""#,
+            r#"export extern "cargo-bench-compare cache""#,
+            r#"export extern "cargo-bench-compare cache list""#,
+            r#"export extern "cargo-bench-compare cache clean""#,
+            "--all",
         ] {
             assert!(
                 NU_MODULE.contains(needle),
@@ -208,17 +258,17 @@ mod tests {
             );
         }
 
-        for command in [
-            "cargo bench-compare cache",
-            "cargo bench-compare cache list",
-            "cargo bench-compare cache clean",
-            "cargo-bench-compare cache",
-            "cargo-bench-compare cache list",
-            "cargo-bench-compare cache clean",
+        // subcommand names come from nushell's native known-external completion on the
+        // nested externs; a completer that returned them again would duplicate every
+        // entry, while no completer at all would fall back to file-path completion
+        for needle in [
+            "  command?: string",
+            "cache-subcommands",
+            r#"str contains " cache ""#,
         ] {
             assert!(
-                !NU_MODULE.contains(&format!("export extern \"{command}\"")),
-                "nu module should not export noisy nested command {command}"
+                !NU_MODULE.contains(needle),
+                "nu module should not use catch-all subcommand positional {needle}"
             );
         }
     }
