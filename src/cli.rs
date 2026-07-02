@@ -1,19 +1,22 @@
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
-use clap::{ArgGroup, Parser, ValueEnum};
+use clap::{ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
 use regex::Regex;
 
 #[derive(Parser)]
 #[command(version, about)]
+#[command(subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]
 #[command(group(
     ArgGroup::new("mode")
         .args(["bench", "bin"])
         .required(true)
 ))]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Sub>,
     #[arg(short = 'p', long = "package")]
-    pub package: String,
+    pub package: Option<String>,
     #[arg(long)]
     pub bench: Option<String>,
     #[arg(long)]
@@ -23,7 +26,7 @@ pub struct Cli {
     #[arg(last = true, requires = "bin")]
     pub trailing_args: Vec<String>,
     #[arg(long = "rev")]
-    pub rev: String,
+    pub rev: Option<String>,
     #[arg(long = "rev-base", default_value = "HEAD")]
     pub rev_base: String,
     #[arg(long = "reps", value_parser = clap::value_parser!(u32).range(1..))]
@@ -46,8 +49,45 @@ pub struct Cli {
     pub json: bool,
     #[arg(long = "keep-worktrees")]
     pub keep_worktrees: bool,
-    #[arg(long = "work-dir")]
+    #[arg(long = "work-dir", value_hint = clap::ValueHint::DirPath)]
     pub work_dir: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+pub enum Sub {
+    /// Generate shell completions
+    Completions(CompletionsArgs),
+    /// Print completion candidates (used by shell completion scripts)
+    #[command(name = "__candidates", hide = true)]
+    Candidates { kind: CandidateKind },
+}
+
+#[derive(clap::Args)]
+pub struct CompletionsArgs {
+    /// bash | zsh | fish | elvish | powershell | nushell
+    pub shell: CompletionShell,
+    /// Write the script to the conventional location instead of stdout
+    #[arg(long)]
+    pub install: bool,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub enum CandidateKind {
+    Packages,
+    Bins,
+    Benches,
+    Revs,
+    Profiles,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
+    Elvish,
+    Powershell,
+    Nushell,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -118,4 +158,20 @@ impl Cli {
 
         Ok(Mode::Binary { bin, args, metric })
     }
+
+    pub fn package(&self) -> Result<&str> {
+        self.package
+            .as_deref()
+            .ok_or_else(|| anyhow!("--package <PACKAGE> is required"))
+    }
+
+    pub fn rev(&self) -> Result<&str> {
+        self.rev
+            .as_deref()
+            .ok_or_else(|| anyhow!("--rev <REV> is required"))
+    }
+}
+
+pub fn command() -> clap::Command {
+    <Cli as CommandFactory>::command()
 }

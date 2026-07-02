@@ -26,6 +26,30 @@ After that, the command is available as:
 cargo bench-compare --help
 ```
 
+## Shell Completions
+
+Install completions with the built-in generator:
+
+```bash
+cargo bench-compare completions nushell --install
+cargo bench-compare completions bash --install
+cargo bench-compare completions zsh --install
+cargo bench-compare completions fish --install
+```
+
+Nushell completions cover both `cargo bench-compare` and
+`cargo-bench-compare`, including dynamic values for revisions, packages,
+bench/bin targets, profiles, and `--metric-dir`. Bash, zsh, fish, elvish, and
+PowerShell static completions apply to the standalone `cargo-bench-compare`
+form; those shells do not get dynamic values in this tier.
+
+To print a script instead of installing it:
+
+```bash
+cargo bench-compare completions nushell
+cargo bench-compare completions bash
+```
+
 ## Usage
 
 ```bash

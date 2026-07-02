@@ -1,5 +1,7 @@
 mod builder;
+mod candidates;
 mod cli;
+mod completions;
 mod criterion;
 mod git;
 mod report;
@@ -13,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, anyhow};
 
-use crate::cli::{Cli, Mode};
+use crate::cli::{Cli, Mode, Sub};
 use crate::stats::{Summary, summarize};
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -27,14 +29,21 @@ fn main() {
 
 fn real_main() -> Result<()> {
     let cli = Cli::parse_from_env();
+    match &cli.command {
+        Some(Sub::Completions(args)) => return completions::run(args),
+        Some(Sub::Candidates { kind }) => return candidates::print(*kind),
+        None => {}
+    }
     let mode = cli.mode()?;
+    let package = cli.package()?;
+    let rev = cli.rev()?;
 
     ctrlc::set_handler(|| CANCELLED.store(true, Ordering::SeqCst))?;
 
     let repo_root = git::repo_root()?;
-    let workspace = workspace::load(&repo_root, &cli.package)?;
+    let workspace = workspace::load(&repo_root, package)?;
     let base = git::resolve_rev(&repo_root, &cli.rev_base)?;
-    let candidate = git::resolve_rev(&repo_root, &cli.rev)?;
+    let candidate = git::resolve_rev(&repo_root, rev)?;
     if base.sha == candidate.sha {
         return Err(anyhow!(
             "base and candidate both resolve to {}; nothing to compare",
@@ -48,7 +57,7 @@ fn real_main() -> Result<()> {
         );
     }
 
-    let work_dir_root = resolve_work_dir(cli.work_dir)?;
+    let work_dir_root = resolve_work_dir(cli.work_dir.clone())?;
     let work_dir = git::repo_work_dir(&work_dir_root, &repo_root);
     std::fs::create_dir_all(&work_dir)?;
     git::sweep_stale_worktrees(&repo_root, &work_dir)?;
@@ -75,10 +84,9 @@ fn real_main() -> Result<()> {
         match &mode {
             Mode::Binary { bin, args, metric } => {
                 let reps = cli.reps.unwrap_or(5);
-                let exe_base = builder::build_bin(&base_ws, &cli.package, bin, &cli.profile)?;
+                let exe_base = builder::build_bin(&base_ws, package, bin, &cli.profile)?;
                 check_cancelled()?;
-                let exe_candidate =
-                    builder::build_bin(&candidate_ws, &cli.package, bin, &cli.profile)?;
+                let exe_candidate = builder::build_bin(&candidate_ws, package, bin, &cli.profile)?;
                 check_cancelled()?;
                 let (base_values, candidate_values, unit, lower_is_better) =
                     runner::run_binary_interleaved(
@@ -121,13 +129,13 @@ fn real_main() -> Result<()> {
                         "warning: --reps is ignored in criterion mode (criterion samples internally)"
                     );
                 }
-                builder::build_bench(&base_ws, &cli.package, bench, &cli.profile, cli.json)?;
+                builder::build_bench(&base_ws, package, bench, &cli.profile, cli.json)?;
                 check_cancelled()?;
-                builder::build_bench(&candidate_ws, &cli.package, bench, &cli.profile, cli.json)?;
+                builder::build_bench(&candidate_ws, package, bench, &cli.profile, cli.json)?;
                 check_cancelled()?;
                 runner::run_criterion(
                     &base_ws,
-                    &cli.package,
+                    package,
                     bench,
                     &cli.profile,
                     &base.short,
@@ -137,7 +145,7 @@ fn real_main() -> Result<()> {
                 check_cancelled()?;
                 runner::run_criterion(
                     &candidate_ws,
-                    &cli.package,
+                    package,
                     bench,
                     &cli.profile,
                     &candidate.short,
@@ -171,7 +179,7 @@ fn real_main() -> Result<()> {
     if cli.json {
         report::print_json(report::JsonReportInput {
             mode: &mode_name,
-            package: &cli.package,
+            package,
             profile: &cli.profile,
             base: &base,
             candidate: &candidate,
@@ -183,7 +191,7 @@ fn real_main() -> Result<()> {
         })?;
     } else {
         report::print_human(report::HumanReport {
-            package: &cli.package,
+            package,
             profile: &cli.profile,
             mode_label,
             metric_label,

@@ -8,6 +8,7 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4.5"
 ctrlc = "3"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
