@@ -61,6 +61,12 @@ pub fn run(all: bool, work_dir_root: &Path) -> Result<()> {
 }
 
 fn clean_dir(dir: &Path) -> Result<()> {
+    let size = clean_dir_inner(dir)?;
+    println!("removed {} ({} freed)", dir.display(), format_size(size));
+    Ok(())
+}
+
+fn clean_dir_inner(dir: &Path) -> Result<u64> {
     let lock = dir.join("warm.lock");
     if git::lock_holder_alive(&lock) {
         return Err(anyhow!(
@@ -73,11 +79,11 @@ fn clean_dir(dir: &Path) -> Result<()> {
     let repo = std::fs::read_to_string(dir.join("repo-path.txt"))
         .ok()
         .map(|s| PathBuf::from(s.trim()));
+    let size = dir_size(dir)?;
     if let Some(repo) = repo.as_deref().filter(|p| p.exists()) {
         remove_registered_worktrees(repo, dir);
     }
 
-    let size = dir_size(dir)?;
     std::fs::remove_dir_all(dir).with_context(|| format!("failed to remove {}", dir.display()))?;
 
     if let Some(repo) = repo.as_deref().filter(|p| p.exists()) {
@@ -86,8 +92,7 @@ fn clean_dir(dir: &Path) -> Result<()> {
             .status();
     }
 
-    println!("removed {} ({} freed)", dir.display(), format_size(size));
-    Ok(())
+    Ok(size)
 }
 
 fn remove_registered_worktrees(repo: &Path, dir: &Path) {
@@ -176,7 +181,10 @@ fn cache_list_lines(rows: &[(String, String, String)]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::cache_list_lines;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    use super::{cache_list_lines, clean_dir_inner};
 
     #[test]
     fn cache_list_aligns_columns_without_tabs() {
@@ -200,5 +208,62 @@ mod tests {
             ]
         );
         assert!(lines.iter().all(|line| !line.contains('\t')));
+    }
+
+    #[test]
+    fn clean_reports_size_before_removing_git_worktrees() {
+        let root = temp_path("bcmp-clean-size");
+        let _cleanup = TempDir(root.clone());
+        let repo = root.join("repo");
+        let cache = root.join("cache");
+        let wt = cache.join("warm-base");
+
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        std::fs::write(repo.join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-qm", "init"]);
+
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("repo-path.txt"), format!("{}\n", repo.display())).unwrap();
+        git(
+            &repo,
+            &["worktree", "add", "--detach", wt.to_str().unwrap(), "HEAD"],
+        );
+        std::fs::create_dir_all(wt.join("target")).unwrap();
+        std::fs::write(wt.join("target/blob"), vec![0; 1024 * 1024]).unwrap();
+
+        let size = clean_dir_inner(&cache).unwrap();
+
+        assert!(size >= 1024 * 1024);
+        assert!(!cache.exists());
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=cargo-bench-compare"])
+            .args(["-c", "user.email=bcmp@invalid"])
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    fn temp_path(prefix: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+    }
+
+    struct TempDir(PathBuf);
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 }
