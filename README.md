@@ -127,6 +127,24 @@ cargo bench-compare clean --all
 The warm worktrees are normal git worktrees and appear in `git worktree list`.
 Manually removing them is safe; the next warm run recreates them.
 
+## CPU pinning and frequency governor
+
+On Linux, measurement runs are pinned with `taskset` by default
+(`--runs-on-core 0`). Use `--runs-on-core <N>` to choose a different core, or
+`--no-pin` to run unpinned. The tool warns when the measured core is not using
+the `performance` CPU governor. If a run is unpinned, it checks all visible CPU
+cores instead. Systems without cpufreq support, common in some VMs and
+containers, stay silent because there is no governor to change.
+
+Pass `--set-governor` to temporarily set the pinned core's governor to
+`performance` for the run. This is opt-in because it may prompt for sudo. The
+previous governor is restored automatically on exit, including Ctrl-C. A process
+killed with SIGKILL cannot restore it; fix that manually with:
+
+```bash
+echo <previous-governor> | sudo tee /sys/devices/system/cpu/cpu<N>/cpufreq/scaling_governor
+```
+
 ## Known Limitations
 
 - Profile detection is a simple text match in the workspace `Cargo.toml`: a

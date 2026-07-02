@@ -5,18 +5,19 @@ mod cli;
 mod completions;
 mod criterion;
 mod git;
+mod governor;
 mod report;
 mod runner;
 mod stats;
 mod workspace;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Result, anyhow};
 
-use crate::cli::{Cli, Mode, Sub};
+use crate::cli::{CacheSub, Cli, Mode, Sub};
 use crate::git::Cleanup;
 use crate::stats::{Summary, summarize};
 
@@ -33,9 +34,12 @@ fn real_main() -> Result<()> {
     let cli = Cli::parse_from_env();
     match &cli.command {
         Some(Sub::Completions(args)) => return completions::run(args),
-        Some(Sub::Clean(args)) => {
+        Some(Sub::Cache(args)) => {
             let work_dir_root = resolve_work_dir(cli.work_dir.clone())?;
-            return clean::run(args.all, &work_dir_root);
+            return match &args.command {
+                CacheSub::List => clean::list(&work_dir_root),
+                CacheSub::Clean(args) => clean::run(args.all, &work_dir_root),
+            };
         }
         Some(Sub::Candidates { kind }) => return candidates::print(*kind),
         None => {}
@@ -51,6 +55,9 @@ fn real_main() -> Result<()> {
         return Err(anyhow!(
             "candidate and base are both ':worktree'; nothing to compare"
         ));
+    }
+    if cli.set_governor && !cfg!(target_os = "linux") {
+        return Err(anyhow!("--set-governor is only supported on Linux"));
     }
 
     ctrlc::set_handler(|| CANCELLED.store(true, Ordering::SeqCst))?;
@@ -92,7 +99,49 @@ fn real_main() -> Result<()> {
         format!("{}\n", repo_path.display()),
     )?;
     git::sweep_stale_worktrees(&repo_root, &work_dir)?;
-    runner::check_governor();
+
+    let pin = runner::pin_prefix(cli.runs_on_core, cli.no_pin);
+    let pinned_core = if pin.is_empty() {
+        None
+    } else {
+        Some(cli.runs_on_core)
+    };
+    if cfg!(target_os = "linux")
+        && let Some(core) = pinned_core
+    {
+        governor::validate_core(Path::new(governor::SYSFS_CPU), core)?;
+    }
+
+    let mut _governor_guard = None;
+    let mut governor_set_by_tool = false;
+    if cli.set_governor {
+        match pinned_core {
+            None => eprintln!(
+                "warning: --set-governor skipped: run is not pinned (taskset unavailable)"
+            ),
+            Some(core) => match governor::set_performance(Path::new(governor::SYSFS_CPU), core)? {
+                governor::SetOutcome::Changed(g) => {
+                    eprintln!(
+                        "set CPU governor on core {core}: {} -> performance (restored on exit)",
+                        g.previous()
+                    );
+                    governor_set_by_tool = true;
+                    _governor_guard = Some(g);
+                }
+                governor::SetOutcome::AlreadyPerformance => {}
+                governor::SetOutcome::Skipped(reason) => {
+                    eprintln!("warning: --set-governor skipped: {reason}");
+                }
+            },
+        }
+    }
+    if cfg!(target_os = "linux")
+        && let Some(w) = governor::governor_warning(Path::new(governor::SYSFS_CPU), pinned_core)
+    {
+        eprintln!("warning: {w}");
+    }
+    let governor =
+        pinned_core.and_then(|core| governor::governor_of(Path::new(governor::SYSFS_CPU), core));
 
     let (base_wt, candidate_wt, _lock) = if cli.cold {
         let cleanup = if cli.keep_worktrees {
@@ -125,12 +174,6 @@ fn real_main() -> Result<()> {
     let base_ws = workspace.worktree_ws_root(&base_wt.path);
     let candidate_ws = workspace.worktree_ws_root(&candidate_wt.path);
 
-    let pin = runner::pin_prefix(cli.runs_on_core, cli.no_pin);
-    let pinned_core = if pin.is_empty() {
-        None
-    } else {
-        Some(cli.runs_on_core)
-    };
     let pinned_label = pinned_core
         .map(|core| format!("core {core} (taskset)"))
         .unwrap_or_else(|| "disabled".to_owned());
@@ -242,6 +285,8 @@ fn real_main() -> Result<()> {
             candidate: &candidate,
             build: build_mode,
             pinned_core,
+            governor: governor.as_deref(),
+            governor_set_by_tool,
             dirty,
             results: &results,
             only_in_base: &only_in_base,
@@ -255,6 +300,8 @@ fn real_main() -> Result<()> {
             metric_label,
             reps_label,
             pinned_label,
+            governor,
+            governor_set_by_tool,
             base: &base,
             candidate: &candidate,
             build: build_mode,

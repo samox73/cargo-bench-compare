@@ -33,6 +33,8 @@ pub struct HumanReport<'a> {
     pub metric_label: Option<String>,
     pub reps_label: String,
     pub pinned_label: String,
+    pub governor: Option<String>,
+    pub governor_set_by_tool: bool,
     pub base: &'a ResolvedRev,
     pub candidate: &'a ResolvedRev,
     pub build: &'a str,
@@ -54,9 +56,18 @@ pub fn print_human(r: HumanReport<'_>) {
     if let Some(metric) = r.metric_label {
         println!("metric: {metric}");
     }
+    let governor = r.governor.map(|gov| {
+        if r.governor_set_by_tool {
+            format!("   governor: {gov} (set for this run)")
+        } else {
+            format!("   governor: {gov}")
+        }
+    });
     println!(
-        "pinning: {}   build: {}   RUSTFLAGS=\"-C target-cpu=native\"",
-        r.pinned_label, r.build
+        "pinning: {}{}   build: {}   RUSTFLAGS=\"-C target-cpu=native\"",
+        r.pinned_label,
+        governor.as_deref().unwrap_or(""),
+        r.build
     );
     if r.dirty {
         println!(
@@ -140,6 +151,8 @@ struct JsonReport<'a> {
     candidate: &'a ResolvedRev,
     build: &'a str,
     pinned_core: Option<u32>,
+    governor: Option<&'a str>,
+    governor_set_by_tool: bool,
     dirty_worktree: bool,
     results: &'a [Comparison],
     only_in_base: &'a [String],
@@ -154,6 +167,8 @@ pub struct JsonReportInput<'a> {
     pub candidate: &'a ResolvedRev,
     pub build: &'a str,
     pub pinned_core: Option<u32>,
+    pub governor: Option<&'a str>,
+    pub governor_set_by_tool: bool,
     pub dirty: bool,
     pub results: &'a [Comparison],
     pub only_in_base: &'a [String],
@@ -171,6 +186,8 @@ pub fn print_json(input: JsonReportInput<'_>) -> Result<()> {
         candidate: input.candidate,
         build: input.build,
         pinned_core: input.pinned_core,
+        governor: input.governor,
+        governor_set_by_tool: input.governor_set_by_tool,
         dirty_worktree: input.dirty,
         results: input.results,
         only_in_base: input.only_in_base,

@@ -5,6 +5,37 @@ use anyhow::{Context, Result, anyhow};
 
 use crate::git;
 
+pub fn list(work_dir_root: &Path) -> Result<()> {
+    if !work_dir_root.exists() {
+        return Ok(());
+    }
+
+    let mut rows = Vec::new();
+    for entry in std::fs::read_dir(work_dir_root)
+        .with_context(|| format!("failed to read {}", work_dir_root.display()))?
+    {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let dir = entry.path();
+        let repo = std::fs::read_to_string(dir.join("repo-path.txt"))
+            .ok()
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "-".to_owned());
+        rows.push((
+            format_size(dir_size(&dir)?),
+            dir.display().to_string(),
+            repo,
+        ));
+    }
+    for line in cache_list_lines(&rows) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
 pub fn run(all: bool, work_dir_root: &Path) -> Result<()> {
     if all {
         if !work_dir_root.exists() {
@@ -118,5 +149,56 @@ fn format_size(bytes: u64) -> String {
         format!("{:.1} GiB", mib / 1024.0)
     } else {
         format!("{mib:.1} MiB")
+    }
+}
+
+fn cache_list_lines(rows: &[(String, String, String)]) -> Vec<String> {
+    let size_w = rows
+        .iter()
+        .map(|(size, _, _)| size.len())
+        .max()
+        .unwrap_or(0)
+        .max("SIZE".len());
+    let cache_w = rows
+        .iter()
+        .map(|(_, cache, _)| cache.len())
+        .max()
+        .unwrap_or(0)
+        .max("CACHE".len());
+
+    let mut lines = vec![format!("{:>size_w$}  {:<cache_w$}  REPO", "SIZE", "CACHE")];
+    lines.extend(
+        rows.iter()
+            .map(|(size, cache, repo)| format!("{size:>size_w$}  {cache:<cache_w$}  {repo}")),
+    );
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cache_list_lines;
+
+    #[test]
+    fn cache_list_aligns_columns_without_tabs() {
+        let rows = vec![
+            ("0.0 MiB".to_owned(), "/short".to_owned(), "-".to_owned()),
+            (
+                "395.9 MiB".to_owned(),
+                "/much/longer/cache/path".to_owned(),
+                "/repo".to_owned(),
+            ),
+        ];
+
+        let lines = cache_list_lines(&rows);
+
+        assert_eq!(
+            lines,
+            [
+                "     SIZE  CACHE                    REPO",
+                "  0.0 MiB  /short                   -",
+                "395.9 MiB  /much/longer/cache/path  /repo",
+            ]
+        );
+        assert!(lines.iter().all(|line| !line.contains('\t')));
     }
 }

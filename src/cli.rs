@@ -5,7 +5,11 @@ use clap::{ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
 use regex::Regex;
 
 #[derive(Parser)]
-#[command(version, about)]
+#[command(
+    version,
+    about,
+    after_help = "Warm build caches can grow large. Use `cargo bench-compare cache list` to inspect them and `cargo bench-compare cache clean` to remove this repo's cache."
+)]
 #[command(subcommand_negates_reqs = true)]
 #[command(group(
     ArgGroup::new("mode")
@@ -55,6 +59,9 @@ pub struct Cli {
     /// Disable CPU pinning
     #[arg(long = "no-pin")]
     pub no_pin: bool,
+    /// Set the pinned core's CPU governor to 'performance' for the duration of the run (restored on exit; may prompt for sudo)
+    #[arg(long = "set-governor", conflicts_with = "no_pin")]
+    pub set_governor: bool,
     /// Cargo profile used to build both revisions
     #[arg(long = "profile", default_value = "release-tuned")]
     pub profile: String,
@@ -76,11 +83,25 @@ pub struct Cli {
 pub enum Sub {
     /// Generate shell completions
     Completions(CompletionsArgs),
-    /// Remove this repo's cached worktrees and build artifacts
-    Clean(CleanArgs),
+    /// Inspect or remove cached worktrees and build artifacts
+    Cache(CacheArgs),
     /// Print completion candidates (used by shell completion scripts)
     #[command(name = "__candidates", hide = true)]
     Candidates { kind: CandidateKind },
+}
+
+#[derive(clap::Args)]
+pub struct CacheArgs {
+    #[command(subcommand)]
+    pub command: CacheSub,
+}
+
+#[derive(Subcommand)]
+pub enum CacheSub {
+    /// List all repo cache directories
+    List,
+    /// Remove this repo's cached worktrees and build artifacts
+    Clean(CleanArgs),
 }
 
 #[derive(clap::Args)]

@@ -12,8 +12,20 @@ def "nu-complete bcmp benches" []  { ^cargo-bench-compare __candidates benches |
 def "nu-complete bcmp revs" []     { ^cargo-bench-compare __candidates revs | lines }
 def "nu-complete bcmp profiles" [] { ^cargo-bench-compare __candidates profiles | lines }
 def "nu-complete bcmp metric-dir" [] { ["higher", "lower"] }
+def "nu-complete bcmp commands" [context?: string] {
+  let context = ($context | default "")
+  if ($context | str contains " cache ") {
+    ["list", "clean"]
+  } else if ($context | str contains " completions ") {
+    ["bash", "zsh", "fish", "elvish", "powershell", "nushell"]
+  } else {
+    ["completions", "cache"]
+  }
+}
 
 export extern "cargo bench-compare" [
+  command?: string@"nu-complete bcmp commands"       # completions | cache
+  subcommand?: string@"nu-complete bcmp commands"    # cache: list | clean; completions: shell
   --package(-p): string@"nu-complete bcmp packages"  # cargo package to benchmark
   --bench: string@"nu-complete bcmp benches"         # criterion benchmark target to run (criterion mode)
   --bin: string@"nu-complete bcmp bins"              # binary target to run (binary mode)
@@ -25,6 +37,7 @@ export extern "cargo bench-compare" [
   --metric-dir: string@"nu-complete bcmp metric-dir" # whether a higher or lower metric is better; decides improved vs regressed
   --runs-on-core: int                                # CPU core to pin measurement runs to via taskset (default: 0)
   --no-pin                                           # disable CPU pinning
+  --set-governor                                     # set the pinned core's governor to 'performance' for the run (restored on exit; may prompt for sudo)
   --profile: string@"nu-complete bcmp profiles"      # cargo profile used to build both revisions (default: release-tuned)
   --json                                             # emit machine-readable JSON instead of the human-readable table
   --cold                                             # build in fresh worktrees instead of the persistent warm ones
@@ -35,6 +48,8 @@ export extern "cargo bench-compare" [
 ]
 
 export extern "cargo-bench-compare" [
+  command?: string@"nu-complete bcmp commands"       # completions | cache
+  subcommand?: string@"nu-complete bcmp commands"    # cache: list | clean; completions: shell
   --package(-p): string@"nu-complete bcmp packages"  # cargo package to benchmark
   --bench: string@"nu-complete bcmp benches"         # criterion benchmark target to run (criterion mode)
   --bin: string@"nu-complete bcmp bins"              # binary target to run (binary mode)
@@ -46,6 +61,7 @@ export extern "cargo-bench-compare" [
   --metric-dir: string@"nu-complete bcmp metric-dir" # whether a higher or lower metric is better; decides improved vs regressed
   --runs-on-core: int                                # CPU core to pin measurement runs to via taskset (default: 0)
   --no-pin                                           # disable CPU pinning
+  --set-governor                                     # set the pinned core's governor to 'performance' for the run (restored on exit; may prompt for sudo)
   --profile: string@"nu-complete bcmp profiles"      # cargo profile used to build both revisions (default: release-tuned)
   --json                                             # emit machine-readable JSON instead of the human-readable table
   --cold                                             # build in fresh worktrees instead of the persistent warm ones
@@ -173,6 +189,37 @@ mod tests {
                     "nu module missing --{long}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn nu_module_completes_cache_subcommands_without_exporting_them() {
+        for needle in [
+            "nu-complete bcmp commands",
+            r#"str contains " cache ""#,
+            r#"str contains " completions ""#,
+            r#"["completions", "cache"]"#,
+            r#"["list", "clean"]"#,
+            r#"["bash", "zsh", "fish", "elvish", "powershell", "nushell"]"#,
+        ] {
+            assert!(
+                NU_MODULE.contains(needle),
+                "nu module missing completion helper {needle}"
+            );
+        }
+
+        for command in [
+            "cargo bench-compare cache",
+            "cargo bench-compare cache list",
+            "cargo bench-compare cache clean",
+            "cargo-bench-compare cache",
+            "cargo-bench-compare cache list",
+            "cargo-bench-compare cache clean",
+        ] {
+            assert!(
+                !NU_MODULE.contains(&format!("export extern \"{command}\"")),
+                "nu module should not export noisy nested command {command}"
+            );
         }
     }
 }

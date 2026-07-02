@@ -39,20 +39,6 @@ fn warn_pinning_once(reason: &str) {
     }
 }
 
-pub fn check_governor() {
-    if !cfg!(target_os = "linux") {
-        return;
-    }
-    let path = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor";
-    let Ok(gov) = std::fs::read_to_string(path) else {
-        return;
-    };
-    let gov = gov.trim();
-    if gov != "performance" {
-        eprintln!("warning: CPU governor is '{gov}', not 'performance'; results may be noisy");
-    }
-}
-
 pub fn run_criterion(
     wt_ws_root: &Path,
     package: &str,
