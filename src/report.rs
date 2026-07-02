@@ -20,7 +20,7 @@ pub fn fmt_ns(ns: f64) -> String {
 pub fn fmt_value(v: f64, unit: &str) -> String {
     match unit {
         "ns" => fmt_ns(v),
-        "s" => format!("{v:.3} s"),
+        "s" => fmt_ns(v * 1e9),
         "metric" => format!("{v:.4}"),
         _ => format!("{v:.4}"),
     }
@@ -191,5 +191,16 @@ pub fn metric_label(metric: &MetricSource) -> String {
             };
             format!("regex '{raw}' ({dir})")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seconds_use_magnitude_adaptive_formatting() {
+        assert_eq!(fmt_value(0.105, "s"), "105.00 ms");
+        assert_eq!(fmt_value(0.0004, "s"), "400.00 µs");
     }
 }

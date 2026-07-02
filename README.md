@@ -9,7 +9,7 @@ worktrees. Each revision gets its own detached worktree and target directory, wi
 Install directly from GitHub with Cargo:
 
 ```bash
-cargo install --git https://github.com/<owner>/cargo-bench-compare
+cargo install --git https://github.com/samox73/cargo-bench-compare
 ```
 
 Cargo installs the binary as `cargo-bench-compare`. Cargo discovers subcommands by
@@ -24,12 +24,6 @@ After that, the command is available as:
 
 ```bash
 cargo bench-compare --help
-```
-
-For local development from a checkout, use:
-
-```bash
-cargo install --path .
 ```
 
 ## Usage
@@ -52,6 +46,12 @@ cargo bench-compare -p rmc-minimal --bin rmc-minimal --reps 3 --rev 04afe73 \
 # Machine-readable
 cargo bench-compare -p rmc-core --bench hot_path --rev 04afe73 --json > cmp.json
 ```
+
+## Known Limitations
+
+Profile detection is a simple text match in the workspace `Cargo.toml`: a commented
+`[profile.release-tuned]` header can suppress automatic profile injection, while
+profiles defined only in `.cargo/config.toml` may be injected redundantly.
 
 ## Future Work
 
