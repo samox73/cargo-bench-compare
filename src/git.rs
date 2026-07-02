@@ -194,6 +194,37 @@ fn merge_base_with_default_branch(repo_root: &Path) -> Result<ResolvedRev> {
     })
 }
 
+/// Verify that `rel_path` exists in the committed tree of `rev`. Catches
+/// revisions from before the workspace existed (e.g. a fork point that predates
+/// a Rust port) up front, instead of failing deep in the build with a bare
+/// file-read error. `side` is "base" or "candidate"; `flag` the matching CLI flag.
+pub fn verify_path_in_rev(
+    repo_root: &Path,
+    rev: &ResolvedRev,
+    side: &str,
+    flag: &str,
+    rel_path: &Path,
+) -> Result<()> {
+    let object = format!("{}:{}", rev.sha, rel_path.display());
+    let found = Command::new("git")
+        .args(["cat-file", "-e", &object])
+        .current_dir(repo_root)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| "failed to run git cat-file")?
+        .success();
+    if found {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "{side} revision {} ({}) does not contain {} — the workspace does not exist at that revision; pass {flag} <REV> that includes it",
+        rev.spec,
+        rev.short,
+        rel_path.display()
+    ))
+}
+
 pub fn is_dirty(repo_root: &Path) -> Result<bool> {
     Ok(
         !run_capture("git", &["status", "--porcelain"], repo_root, &[])?
@@ -602,6 +633,28 @@ mod tests {
 
         assert_eq!(base.sha, a);
         assert_eq!(base.spec, "merge-base(main)");
+    }
+
+    #[test]
+    fn verify_path_in_rev_rejects_revision_without_workspace() {
+        let dir = init_repo("bcmp-verify-path", "main");
+        let _cleanup = TempDir(dir.clone());
+        let before = resolve_rev(&dir, "HEAD").unwrap();
+        std::fs::create_dir_all(dir.join("rust")).unwrap();
+        std::fs::write(dir.join("rust/Cargo.toml"), "[package]\n").unwrap();
+        git_in(&dir, &["add", "-A"]);
+        git_in(&dir, &["commit", "-qm", "add rust workspace"]);
+        let after = resolve_rev(&dir, "HEAD").unwrap();
+        let rel = Path::new("rust/Cargo.toml");
+
+        assert!(verify_path_in_rev(&dir, &after, "base", "--rev-base", rel).is_ok());
+
+        let err = verify_path_in_rev(&dir, &before, "base", "--rev-base", rel)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not contain rust/Cargo.toml"), "{err}");
+        assert!(err.contains(&before.short), "{err}");
+        assert!(err.contains("pass --rev-base <REV>"), "{err}");
     }
 
     #[test]

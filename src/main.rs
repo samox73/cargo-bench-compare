@@ -6,6 +6,7 @@ mod completions;
 mod criterion;
 mod git;
 mod governor;
+mod progress;
 mod report;
 mod runner;
 mod stats;
@@ -85,6 +86,10 @@ fn real_main() -> Result<()> {
             "warning: working tree is dirty; uncommitted local changes are NOT included in either side"
         );
     }
+
+    let manifest_rel = workspace.ws_rel.join("Cargo.toml");
+    git::verify_path_in_rev(&repo_root, &base, "base", "--rev-base", &manifest_rel)?;
+    git::verify_path_in_rev(&repo_root, &candidate, "candidate", "--rev", &manifest_rel)?;
 
     let work_dir_root = resolve_work_dir(cli.work_dir.clone())?;
     let work_dir = git::repo_work_dir(&work_dir_root, &repo_root);
@@ -176,12 +181,18 @@ fn real_main() -> Result<()> {
 
     let (results, only_in_base, only_in_candidate, mode_name, mode_label, metric_label, reps_label) =
         match &mode {
-            Mode::Binary { bin, args, metric } => {
+            Mode::Binary {
+                bin,
+                args,
+                metric,
+                progress: progress_pattern,
+            } => {
                 let reps = cli.reps.unwrap_or(5);
                 let exe_base = builder::build_bin(&base_ws, package, bin, &cli.profile)?;
                 check_cancelled()?;
                 let exe_candidate = builder::build_bin(&candidate_ws, package, bin, &cli.profile)?;
                 check_cancelled()?;
+                let progress = progress::Progress::new(!cli.no_progress);
                 let (base_values, candidate_values, unit, lower_is_better) =
                     runner::run_binary_interleaved(
                         runner::BinaryRun {
@@ -198,6 +209,8 @@ fn real_main() -> Result<()> {
                         },
                         reps,
                         metric,
+                        progress_pattern.as_ref(),
+                        &progress,
                         &CANCELLED,
                     )?;
                 let comparison = stats::compare(

@@ -63,4 +63,22 @@ sed -i 's/black_box(20)/black_box(21)/g' benches/fixture_bench.rs
 git add -A && git commit -qm "D: criterion fib 21"
 git tag fixture-d
 
-echo "fixture ready: $dir (tags fixture-a, fixture-b, fixture-c, fixture-d)"
+# commit E: progress-printing binary, 20 steps, metric 100
+cat > src/main.rs <<'EOF'
+fn main() {
+    for i in 1..=20u32 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        eprintln!("step {i}/20");
+    }
+    println!("steps/sec: 100");
+}
+EOF
+git add -A && git commit -qm "E: progress 20 steps, metric 100"
+git tag fixture-e
+
+# commit F: same shape, slower, metric 90
+sed -i 's/from_millis(10)/from_millis(20)/; s/steps\/sec: 100/steps\/sec: 90/' src/main.rs
+git add -A && git commit -qm "F: progress 20 steps slower, metric 90"
+git tag fixture-f
+
+echo "fixture ready: $dir (tags fixture-a, fixture-b, fixture-c, fixture-d, fixture-e, fixture-f)"

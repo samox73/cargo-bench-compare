@@ -9,6 +9,7 @@ use regex::Regex;
 use crate::builder;
 use crate::cli::MetricSource;
 use crate::git;
+use crate::progress::{self, Event, Side};
 
 static WARNED_TASKSET: AtomicBool = AtomicBool::new(false);
 
@@ -113,6 +114,8 @@ pub fn run_binary_interleaved(
     candidate: BinaryRun<'_>,
     reps: u32,
     metric: &MetricSource,
+    progress_pattern: Option<&Regex>,
+    progress: &progress::Progress,
     cancelled: &AtomicBool,
 ) -> Result<(Vec<f64>, Vec<f64>, String, bool)> {
     let mut base_values = Vec::with_capacity(reps as usize);
@@ -124,15 +127,27 @@ pub fn run_binary_interleaved(
         } => ("metric".to_owned(), !higher_is_better),
     };
 
-    for _ in 0..reps {
+    for i in 0..reps {
         if cancelled.load(Ordering::SeqCst) {
             return Err(anyhow!("interrupted"));
         }
-        base_values.push(run_one(&base, metric)?);
+        progress.send(Event::RunStart {
+            run: 2 * i + 1,
+            total: 2 * reps,
+            side: Side::Base,
+        });
+        base_values.push(run_one(&base, metric, progress_pattern, progress)?);
+        progress.send(Event::RunEnd);
         if cancelled.load(Ordering::SeqCst) {
             return Err(anyhow!("interrupted"));
         }
-        candidate_values.push(run_one(&candidate, metric)?);
+        progress.send(Event::RunStart {
+            run: 2 * i + 2,
+            total: 2 * reps,
+            side: Side::Candidate,
+        });
+        candidate_values.push(run_one(&candidate, metric, progress_pattern, progress)?);
+        progress.send(Event::RunEnd);
         if cancelled.load(Ordering::SeqCst) {
             return Err(anyhow!("interrupted"));
         }
@@ -147,25 +162,72 @@ pub struct BinaryRun<'a> {
     pub pin: &'a [String],
 }
 
-fn run_one(run: &BinaryRun<'_>, metric: &MetricSource) -> Result<f64> {
+fn run_one(
+    run: &BinaryRun<'_>,
+    metric: &MetricSource,
+    progress_pattern: Option<&Regex>,
+    progress: &progress::Progress,
+) -> Result<f64> {
     let exe = run.exe.display().to_string();
     let (program, args) = command_with_optional_prefix(run.pin, &exe, run.args);
     let t0 = Instant::now();
-    let output = Command::new(&program)
+    let mut child = Command::new(&program)
         .args(&args)
         .current_dir(run.cwd)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .with_context(|| format!("failed to run {program}"))?;
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+    let stdout_thread = drain_thread(stdout, progress_pattern, progress.sender());
+    let stderr_thread = drain_thread(stderr, progress_pattern, progress.sender());
+    let status = child.wait()?;
     let wall_secs = t0.elapsed().as_secs_f64();
-    if !output.status.success() {
+    let stdout = stdout_thread.join().unwrap_or_default();
+    let stderr = stderr_thread.join().unwrap_or_default();
+    if !status.success() {
+        let output = std::process::Output {
+            status,
+            stdout,
+            stderr,
+        };
         return Err(git::output_error(&program, &args, &output));
     }
     match metric {
         MetricSource::WallClock => Ok(wall_secs),
-        MetricSource::Regex { pattern, .. } => {
-            extract_regex_metric(pattern, &output.stdout, &output.stderr)
-        }
+        MetricSource::Regex { pattern, .. } => extract_regex_metric(pattern, &stdout, &stderr),
     }
+}
+
+fn drain_thread<R: std::io::Read + Send + 'static>(
+    mut reader: R,
+    progress_pattern: Option<&Regex>,
+    progress_tx: Option<std::sync::mpsc::Sender<Event>>,
+) -> std::thread::JoinHandle<Vec<u8>> {
+    let progress_pattern = progress_pattern.cloned();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let mut buf = [0_u8; 8192];
+        let mut scanner = progress::LineScanner::default();
+        loop {
+            match std::io::Read::read(&mut reader, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    out.extend_from_slice(&buf[..n]);
+                    if let (Some(pattern), Some(tx)) = (&progress_pattern, &progress_tx) {
+                        scanner.push(&buf[..n], &mut |line| {
+                            if let Some(fraction) = progress::progress_fraction(pattern, line) {
+                                let _ = tx.send(Event::Fraction(fraction));
+                            }
+                        });
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        out
+    })
 }
 
 fn extract_regex_metric(pattern: &Regex, stdout: &[u8], stderr: &[u8]) -> Result<f64> {
@@ -212,5 +274,28 @@ fn command_with_optional_prefix(
         all.push(program.to_owned());
         all.extend(args.iter().cloned());
         (prefix_program, all)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_one_drains_large_output_without_deadlock() {
+        let script =
+            "head -c 200000 /dev/zero | tr '\\0' x; head -c 200000 /dev/zero | tr '\\0' y 1>&2";
+        let args = vec!["-c".to_owned(), script.to_owned()];
+        let tmp = std::env::temp_dir().join(format!("bcmp-runner-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let progress = progress::Progress::new(false);
+        let run = BinaryRun {
+            exe: Path::new("sh"),
+            args: &args,
+            cwd: &tmp,
+            pin: &[],
+        };
+        assert!(run_one(&run, &MetricSource::WallClock, None, &progress).is_ok());
+        let _ = std::fs::remove_dir(&tmp);
     }
 }

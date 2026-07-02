@@ -26,6 +26,8 @@ export extern "cargo bench-compare" [
   --rev-base: string@"nu-complete bcmp revs"         # base revision; ':merge-base' = fork point of HEAD and the default branch (default)
   --reps: int                                        # measurement runs per revision (binary mode; default: 5)
   --metric-regex: string                             # regex with one capture group extracting a numeric metric from output; default is wall-clock time
+  --progress-regex: string                           # regex extracting live progress: (done, total) groups or one percent group (binary mode)
+  --no-progress                                      # disable the live status line during measurement runs
   --metric-dir: string@"nu-complete bcmp metric-dir" # whether a higher or lower metric is better; decides improved vs regressed
   --runs-on-core: int                                # CPU core to pin measurement runs to via taskset (default: 0)
   --no-pin                                           # disable CPU pinning
@@ -72,6 +74,8 @@ export extern "cargo-bench-compare" [
   --rev-base: string@"nu-complete bcmp revs"         # base revision; ':merge-base' = fork point of HEAD and the default branch (default)
   --reps: int                                        # measurement runs per revision (binary mode; default: 5)
   --metric-regex: string                             # regex with one capture group extracting a numeric metric from output; default is wall-clock time
+  --progress-regex: string                           # regex extracting live progress: (done, total) groups or one percent group (binary mode)
+  --no-progress                                      # disable the live status line during measurement runs
   --metric-dir: string@"nu-complete bcmp metric-dir" # whether a higher or lower metric is better; decides improved vs regressed
   --runs-on-core: int                                # CPU core to pin measurement runs to via taskset (default: 0)
   --no-pin                                           # disable CPU pinning

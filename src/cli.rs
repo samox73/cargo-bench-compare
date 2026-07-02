@@ -46,6 +46,12 @@ pub struct Cli {
     /// Regex with one capture group extracting a numeric metric from the binary's output (last match wins); without it, wall-clock time is measured
     #[arg(long = "metric-regex", requires = "bin")]
     pub metric_regex: Option<String>,
+    /// Regex extracting live progress from the binary's output: two capture groups (done, total), or one capture group interpreted as a percentage 0-100; drives the status line (binary mode)
+    #[arg(long = "progress-regex", requires = "bin")]
+    pub progress_regex: Option<String>,
+    /// Disable the live status line during measurement runs
+    #[arg(long = "no-progress")]
+    pub no_progress: bool,
     /// Whether a higher or lower extracted metric is better; decides improved vs regressed
     #[arg(
         long = "metric-dir",
@@ -155,6 +161,7 @@ pub enum Mode {
         bin: String,
         args: Vec<String>,
         metric: MetricSource,
+        progress: Option<Regex>,
     },
 }
 
@@ -207,7 +214,22 @@ impl Cli {
             MetricSource::WallClock
         };
 
-        Ok(Mode::Binary { bin, args, metric })
+        let progress = if let Some(raw) = &self.progress_regex {
+            let pattern = Regex::new(raw)?;
+            if pattern.captures_len() < 2 {
+                return Err(anyhow!("--progress-regex must contain a capture group"));
+            }
+            Some(pattern)
+        } else {
+            None
+        };
+
+        Ok(Mode::Binary {
+            bin,
+            args,
+            metric,
+            progress,
+        })
     }
 
     pub fn package(&self) -> Result<&str> {

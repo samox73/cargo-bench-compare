@@ -67,7 +67,10 @@ pub fn print_human(r: HumanReport<'_>) {
     settings.push(("build", r.build.to_owned()));
     settings.push(("RUSTFLAGS", "-C target-cpu=native".to_owned()));
     settings.push(("base", format!("{} ({})", r.base.spec, r.base.short)));
-    settings.push(("rev", format!("{} ({})", r.candidate.spec, r.candidate.short)));
+    settings.push((
+        "rev",
+        format!("{} ({})", r.candidate.spec, r.candidate.short),
+    ));
 
     let mut rows = vec![[
         "benchmark".to_owned(),
@@ -151,7 +154,13 @@ fn horizontal_table(settings: &[(&str, String)], results: &[[String; 5]]) -> Str
         .max()
         .unwrap_or(0);
     let mut col_w = (1..5)
-        .map(|col| results.iter().map(|row| width(&row[col])).max().unwrap_or(0))
+        .map(|col| {
+            results
+                .iter()
+                .map(|row| width(&row[col]))
+                .max()
+                .unwrap_or(0)
+        })
         .collect::<Vec<_>>();
     // the settings value column spans the four result columns (each padded by
     // one space per side, plus three `│` separators); widen the last result
@@ -359,8 +368,14 @@ mod tests {
     fn sample_results() -> Vec<[String; 5]> {
         vec![
             ["benchmark", "base", "rev", "Δ", "verdict"].map(str::to_owned),
-            ["a-benchmark-with-a-long-name", "1.0 ± 0.1", "1.1 ± 0.2", "+10.0%", "improved"]
-                .map(str::to_owned),
+            [
+                "a-benchmark-with-a-long-name",
+                "1.0 ± 0.1",
+                "1.1 ± 0.2",
+                "+10.0%",
+                "improved",
+            ]
+            .map(str::to_owned),
         ]
     }
 
@@ -379,7 +394,10 @@ mod tests {
         assert!(lines[1].contains("│ package"));
         assert!(lines[3].starts_with('├') && lines[3].contains('┼') && lines[3].contains('┬'));
         assert!(lines[4].contains("│ benchmark"));
-        assert!(lines[5].starts_with('├') && !lines[5].contains('┬'), "header separator");
+        assert!(
+            lines[5].starts_with('├') && !lines[5].contains('┬'),
+            "header separator"
+        );
         assert!(lines[6].contains("+10.0% │"), "Δ column right-aligned");
         assert!(lines[7].starts_with('└') && lines[7].ends_with('┘'));
         let width = lines[0].chars().count();
@@ -407,8 +425,16 @@ mod tests {
         // top + 1 setting + 2 benchmarks of (separator + 5 rows) + bottom
         assert_eq!(lines.len(), 15);
         assert_eq!(lines.iter().filter(|l| l.starts_with('├')).count(), 2);
-        assert!(lines.iter().any(|l| l.starts_with("│ benchmark") && l.contains("fib_20")));
-        assert!(lines.iter().any(|l| l.starts_with("│ Δ") && l.contains("-5.0%")));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("│ benchmark") && l.contains("fib_20"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("│ Δ") && l.contains("-5.0%"))
+        );
         let width = lines[0].chars().count();
         for line in &lines {
             assert_eq!(line.chars().count(), width, "misaligned row: {line}");

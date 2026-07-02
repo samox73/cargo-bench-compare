@@ -1,6 +1,6 @@
 [package]
 name = "cargo-bench-compare"
-version = "0.4.0"
+version = "0.5.1"
 edition = "2024"
 description = "Benchmark two git revisions of a Rust workspace against each other using git worktrees"
 license = "MIT OR Apache-2.0"

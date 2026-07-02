@@ -81,6 +81,25 @@ cargo bench-compare -p rmc-minimal --bin rmc-minimal --reps 3 \
 cargo bench-compare -p rmc-core --bench hot_path --json > cmp.json
 ```
 
+## Progress
+
+Binary mode shows a live status line on stderr during measurement runs: run
+counter, side, elapsed time, and ETA. It is automatically disabled when stderr is
+not a terminal, and can be disabled with `--no-progress`.
+
+`--progress-regex` adds within-run percentages by scraping the binary's stdout or
+stderr. Two capture groups are read as `done/total`; one capture group is read as
+a percentage from 0 to 100. Named groups `done`/`total`/`percent` also work.
+Matching is best-effort; lines that fail to parse are ignored.
+
+```bash
+cargo bench-compare -p rmc-minimal --bin rmc-minimal --reps 3 \
+    --progress-regex 'step (\d+)/(\d+)' -- full 100000000
+```
+
+The benchmarked process pays for its own printing, so rate-limit progress output
+to roughly 10 lines/sec to keep the measurement clean.
+
 ## Revisions and defaults
 
 `--rev` (candidate) and `--rev-base` (base) accept any commit, branch, or tag,
@@ -157,5 +176,6 @@ echo <previous-governor> | sudo tee /sys/devices/system/cpu/cpu<N>/cpufreq/scali
 
 ## Future Work
 
-Welch's t-test, `BENCH_RESULT` line protocol, `--fail-on-regression` exit code,
-lockfile-difference note, and colors are intentionally out of scope for now.
+Welch's t-test, `BENCH_RESULT`/`BENCH_PROGRESS` line protocol (opt-in via a
+`BCMP_PROGRESS` env var), `--fail-on-regression` exit code, lockfile-difference
+note, and colors are intentionally out of scope for now.
