@@ -15,42 +15,42 @@ def "nu-complete bcmp metric-dir" [] { ["higher", "lower"] }
 
 export extern "cargo bench-compare" [
   --package(-p): string@"nu-complete bcmp packages"  # cargo package to benchmark
-  --bench: string@"nu-complete bcmp benches"         # criterion bench name
-  --bin: string@"nu-complete bcmp bins"              # binary name (binary mode)
-  --args: string                                     # whitespace-split args for the binary
-  --rev: string@"nu-complete bcmp revs"              # candidate revision
-  --rev-base: string@"nu-complete bcmp revs"         # base revision (default: HEAD)
-  --reps: int                                        # measurement repetitions (binary mode)
-  --metric-regex: string                             # regex extracting the metric from output
-  --metric-dir: string@"nu-complete bcmp metric-dir" # higher|lower
-  --runs-on-core: int                                # CPU core for taskset
+  --bench: string@"nu-complete bcmp benches"         # criterion benchmark target to run (criterion mode)
+  --bin: string@"nu-complete bcmp bins"              # binary target to run (binary mode)
+  --args: string                                     # arguments for the binary, split on whitespace (binary mode)
+  --rev: string@"nu-complete bcmp revs"              # candidate revision to benchmark (commit, branch, or tag)
+  --rev-base: string@"nu-complete bcmp revs"         # base revision to compare against (default: HEAD)
+  --reps: int                                        # measurement runs per revision (binary mode; default: 5)
+  --metric-regex: string                             # regex with one capture group extracting a numeric metric from output; default is wall-clock time
+  --metric-dir: string@"nu-complete bcmp metric-dir" # whether a higher or lower metric is better; decides improved vs regressed
+  --runs-on-core: int                                # CPU core to pin measurement runs to via taskset (default: 0)
   --no-pin                                           # disable CPU pinning
-  --profile: string@"nu-complete bcmp profiles"      # cargo profile
-  --json                                             # machine-readable output
-  --keep-worktrees                                   # keep worktrees for debugging
-  --work-dir: path                                   # parent dir for worktrees
-  --help(-h)
-  ...args: string                                    # trailing args after --
+  --profile: string@"nu-complete bcmp profiles"      # cargo profile used to build both revisions (default: release-tuned)
+  --json                                             # emit machine-readable JSON instead of the human-readable table
+  --keep-worktrees                                   # keep the temporary worktrees for debugging
+  --work-dir: path                                   # parent directory for temporary worktrees (default: ~/.cache/cargo-bench-compare)
+  --help(-h)                                         # print help
+  ...args: string                                    # trailing args passed to the binary verbatim (after --)
 ]
 
 export extern "cargo-bench-compare" [
   --package(-p): string@"nu-complete bcmp packages"  # cargo package to benchmark
-  --bench: string@"nu-complete bcmp benches"         # criterion bench name
-  --bin: string@"nu-complete bcmp bins"              # binary name (binary mode)
-  --args: string                                     # whitespace-split args for the binary
-  --rev: string@"nu-complete bcmp revs"              # candidate revision
-  --rev-base: string@"nu-complete bcmp revs"         # base revision (default: HEAD)
-  --reps: int                                        # measurement repetitions (binary mode)
-  --metric-regex: string                             # regex extracting the metric from output
-  --metric-dir: string@"nu-complete bcmp metric-dir" # higher|lower
-  --runs-on-core: int                                # CPU core for taskset
+  --bench: string@"nu-complete bcmp benches"         # criterion benchmark target to run (criterion mode)
+  --bin: string@"nu-complete bcmp bins"              # binary target to run (binary mode)
+  --args: string                                     # arguments for the binary, split on whitespace (binary mode)
+  --rev: string@"nu-complete bcmp revs"              # candidate revision to benchmark (commit, branch, or tag)
+  --rev-base: string@"nu-complete bcmp revs"         # base revision to compare against (default: HEAD)
+  --reps: int                                        # measurement runs per revision (binary mode; default: 5)
+  --metric-regex: string                             # regex with one capture group extracting a numeric metric from output; default is wall-clock time
+  --metric-dir: string@"nu-complete bcmp metric-dir" # whether a higher or lower metric is better; decides improved vs regressed
+  --runs-on-core: int                                # CPU core to pin measurement runs to via taskset (default: 0)
   --no-pin                                           # disable CPU pinning
-  --profile: string@"nu-complete bcmp profiles"      # cargo profile
-  --json                                             # machine-readable output
-  --keep-worktrees                                   # keep worktrees for debugging
-  --work-dir: path                                   # parent dir for worktrees
-  --help(-h)
-  ...args: string                                    # trailing args after --
+  --profile: string@"nu-complete bcmp profiles"      # cargo profile used to build both revisions (default: release-tuned)
+  --json                                             # emit machine-readable JSON instead of the human-readable table
+  --keep-worktrees                                   # keep the temporary worktrees for debugging
+  --work-dir: path                                   # parent directory for temporary worktrees (default: ~/.cache/cargo-bench-compare)
+  --help(-h)                                         # print help
+  ...args: string                                    # trailing args passed to the binary verbatim (after --)
 ]
 "#;
 

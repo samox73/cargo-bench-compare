@@ -15,40 +15,56 @@ use regex::Regex;
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Sub>,
+    /// Cargo package to benchmark
     #[arg(short = 'p', long = "package")]
     pub package: Option<String>,
+    /// Criterion benchmark target to run (criterion mode)
     #[arg(long)]
     pub bench: Option<String>,
+    /// Binary target to run (binary mode)
     #[arg(long)]
     pub bin: Option<String>,
+    /// Arguments for the binary, split on whitespace (binary mode)
     #[arg(long = "args", requires = "bin")]
     pub args: Option<String>,
+    /// Additional arguments passed to the binary verbatim
     #[arg(last = true, requires = "bin")]
     pub trailing_args: Vec<String>,
+    /// Candidate revision to benchmark (commit, branch, or tag)
     #[arg(long = "rev")]
     pub rev: Option<String>,
+    /// Base revision to compare the candidate against
     #[arg(long = "rev-base", default_value = "HEAD")]
     pub rev_base: String,
+    /// Measurement runs per revision (binary mode; ignored in criterion mode) [default: 5]
     #[arg(long = "reps", value_parser = clap::value_parser!(u32).range(1..))]
     pub reps: Option<u32>,
+    /// Regex with one capture group extracting a numeric metric from the binary's output (last match wins); without it, wall-clock time is measured
     #[arg(long = "metric-regex", requires = "bin")]
     pub metric_regex: Option<String>,
+    /// Whether a higher or lower extracted metric is better; decides improved vs regressed
     #[arg(
         long = "metric-dir",
         default_value = "higher",
         requires = "metric_regex"
     )]
     pub metric_dir: MetricDir,
+    /// CPU core to pin measurement runs to via taskset (Linux)
     #[arg(long = "runs-on-core", default_value_t = 0)]
     pub runs_on_core: u32,
+    /// Disable CPU pinning
     #[arg(long = "no-pin")]
     pub no_pin: bool,
+    /// Cargo profile used to build both revisions
     #[arg(long = "profile", default_value = "release-tuned")]
     pub profile: String,
+    /// Emit machine-readable JSON instead of the human-readable table
     #[arg(long = "json")]
     pub json: bool,
+    /// Keep the temporary worktrees for debugging
     #[arg(long = "keep-worktrees")]
     pub keep_worktrees: bool,
+    /// Parent directory for temporary worktrees [default: ~/.cache/cargo-bench-compare]
     #[arg(long = "work-dir", value_hint = clap::ValueHint::DirPath)]
     pub work_dir: Option<PathBuf>,
 }
@@ -92,7 +108,9 @@ pub enum CompletionShell {
 
 #[derive(Clone, Copy, ValueEnum)]
 pub enum MetricDir {
+    /// Larger metric values are better (throughput-like, e.g. steps/sec)
     Higher,
+    /// Smaller metric values are better (latency-like, e.g. ms per op)
     Lower,
 }
 
