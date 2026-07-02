@@ -72,16 +72,34 @@ fn run_cargo_capture_stdout(wt_ws_root: &Path, args: &[String]) -> Result<String
     Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
-fn run_cargo_status(wt_ws_root: &Path, args: &[String]) -> Result<()> {
+fn run_cargo_status(wt_ws_root: &Path, args: &[String], json: bool) -> Result<()> {
     let mut child = Command::new("cargo")
         .args(args)
         .current_dir(wt_ws_root)
         .env("RUSTFLAGS", "-C target-cpu=native")
         .env("CARGO_TARGET_DIR", target_dir(wt_ws_root))
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| "failed to run cargo")?;
 
+    let mut stdout = child.stdout.take().expect("stdout piped");
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = [0_u8; 8192];
+        loop {
+            match std::io::Read::read(&mut stdout, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if json {
+                        let _ = std::io::Write::write_all(&mut std::io::stderr(), &buf[..n]);
+                    } else {
+                        let _ = std::io::Write::write_all(&mut std::io::stdout(), &buf[..n]);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
     let mut stderr = child.stderr.take().expect("stderr piped");
     let stderr_thread = std::thread::spawn(move || {
         let mut bytes = Vec::new();
@@ -99,6 +117,7 @@ fn run_cargo_status(wt_ws_root: &Path, args: &[String]) -> Result<()> {
         bytes
     });
     let status = child.wait()?;
+    let _ = stdout_thread.join();
     let stderr = stderr_thread.join().unwrap_or_default();
 
     if !status.success() {
@@ -151,7 +170,13 @@ pub fn build_bin(wt_ws_root: &Path, package: &str, bin: &str, profile: &str) -> 
         .ok_or_else(|| anyhow!("build succeeded but no executable artifact found for bin '{bin}'"))
 }
 
-pub fn build_bench(wt_ws_root: &Path, package: &str, bench: &str, profile: &str) -> Result<()> {
+pub fn build_bench(
+    wt_ws_root: &Path,
+    package: &str,
+    bench: &str,
+    profile: &str,
+    json: bool,
+) -> Result<()> {
     let mut args = profile_config_args(wt_ws_root, profile)?;
     args.extend([
         "bench".to_owned(),
@@ -163,7 +188,7 @@ pub fn build_bench(wt_ws_root: &Path, package: &str, bench: &str, profile: &str)
         profile.to_owned(),
         "--no-run".to_owned(),
     ]);
-    run_cargo_status(wt_ws_root, &args)
+    run_cargo_status(wt_ws_root, &args, json)
 }
 
 fn normalize_name(name: &str) -> String {

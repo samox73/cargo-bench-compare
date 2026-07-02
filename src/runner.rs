@@ -60,6 +60,7 @@ pub fn run_criterion(
     profile: &str,
     short_sha: &str,
     pin: &[String],
+    json: bool,
 ) -> Result<()> {
     let mut cargo_args = builder::profile_config_args(wt_ws_root, profile)?;
     cargo_args.extend([
@@ -93,7 +94,11 @@ pub fn run_criterion(
             match std::io::Read::read(&mut stdout, &mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let _ = std::io::Write::write_all(&mut std::io::stdout(), &buf[..n]);
+                    if json {
+                        let _ = std::io::Write::write_all(&mut std::io::stderr(), &buf[..n]);
+                    } else {
+                        let _ = std::io::Write::write_all(&mut std::io::stdout(), &buf[..n]);
+                    }
                 }
                 Err(_) => break,
             }

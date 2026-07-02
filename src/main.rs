@@ -49,7 +49,8 @@ fn real_main() -> Result<()> {
         );
     }
 
-    let work_dir = resolve_work_dir(cli.work_dir)?;
+    let work_dir_root = resolve_work_dir(cli.work_dir)?;
+    let work_dir = git::repo_work_dir(&work_dir_root, &repo_root);
     std::fs::create_dir_all(&work_dir)?;
     git::sweep_stale_worktrees(&repo_root, &work_dir)?;
     runner::check_governor();
@@ -120,9 +121,9 @@ fn real_main() -> Result<()> {
                         "warning: --reps is ignored in criterion mode (criterion samples internally)"
                     );
                 }
-                builder::build_bench(&base_ws, &cli.package, bench, &cli.profile)?;
+                builder::build_bench(&base_ws, &cli.package, bench, &cli.profile, cli.json)?;
                 check_cancelled()?;
-                builder::build_bench(&candidate_ws, &cli.package, bench, &cli.profile)?;
+                builder::build_bench(&candidate_ws, &cli.package, bench, &cli.profile, cli.json)?;
                 check_cancelled()?;
                 runner::run_criterion(
                     &base_ws,
@@ -131,6 +132,7 @@ fn real_main() -> Result<()> {
                     &cli.profile,
                     &base.short,
                     &pin,
+                    cli.json,
                 )?;
                 check_cancelled()?;
                 runner::run_criterion(
@@ -140,6 +142,7 @@ fn real_main() -> Result<()> {
                     &cli.profile,
                     &candidate.short,
                     &pin,
+                    cli.json,
                 )?;
                 check_cancelled()?;
 

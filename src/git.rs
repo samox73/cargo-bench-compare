@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -188,16 +189,18 @@ pub fn sweep_stale_worktrees(repo_root: &Path, work_dir: &Path) -> Result<()> {
         .lines()
         .filter_map(|line| line.strip_prefix("worktree "))
         .map(PathBuf::from)
+        .map(canonical_or_self)
         .collect::<std::collections::HashSet<_>>();
 
     for entry in std::fs::read_dir(work_dir)? {
         let entry = entry?;
         let path = entry.path();
+        let canonical_path = canonical_or_self(path.clone());
         let starts_bcmp = path
             .file_name()
             .and_then(OsStr::to_str)
             .is_some_and(|name| name.starts_with("bcmp-"));
-        if starts_bcmp && !active.contains(&path) {
+        if starts_bcmp && !active.contains(&canonical_path) {
             std::fs::remove_dir_all(&path).with_context(|| {
                 format!("failed to remove stale worktree dir {}", path.display())
             })?;
@@ -205,4 +208,44 @@ pub fn sweep_stale_worktrees(repo_root: &Path, work_dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+pub fn repo_work_dir(work_dir: &Path, repo_root: &Path) -> PathBuf {
+    let canonical_root = std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_owned());
+    work_dir.join(repo_key(&canonical_root))
+}
+
+fn repo_key(repo_root: &Path) -> String {
+    let root = repo_root.display().to_string();
+    let mut hasher = DefaultHasher::new();
+    root.hash(&mut hasher);
+    let hash = hasher.finish();
+    let safe_root = root.replace(std::path::MAIN_SEPARATOR, "-");
+    format!("{safe_root}-{hash:08x}", hash = hash & 0xffff_ffff)
+}
+
+fn canonical_or_self(path: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&path).unwrap_or(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repo_work_dir_namespaces_repos_under_shared_root() {
+        let cache = Path::new("/tmp/cargo-bench-compare");
+        let first = repo_work_dir(cache, Path::new("/tmp/one/project"));
+        let second = repo_work_dir(cache, Path::new("/tmp/two/project"));
+
+        assert_ne!(first, second);
+        assert_eq!(first.parent(), Some(cache));
+        assert_eq!(second.parent(), Some(cache));
+    }
+
+    #[test]
+    fn canonical_or_self_keeps_missing_path() {
+        let path = PathBuf::from("/tmp/cargo-bench-compare-missing-path-for-test");
+        assert_eq!(canonical_or_self(path.clone()), path);
+    }
 }
