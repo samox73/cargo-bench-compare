@@ -67,7 +67,10 @@ fn forward_stderr_line(line: &[u8]) {
 
 enum BuildLine {
     /// Cargo's forced progress meter: `Building [===>  ] 45/128: serde, syn`.
-    Progress { done: u64, total: u64 },
+    Progress {
+        done: u64,
+        total: u64,
+    },
     Status(String),
     Warning,
     Other,

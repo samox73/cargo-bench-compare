@@ -139,28 +139,12 @@ fn new_bar(total_runs: u32) -> ProgressBar {
     bar
 }
 
-/// KITT scanner spinner: a dot sweeping back and forth inside a bracket.
-/// All animation frames are 7 cells wide; the last entry is indicatif's
-/// "finished" frame — never visible here (the bar is cleared) but kept
-/// width-consistent anyway.
-const TICK_FRAMES: &[&str] = &[
-    "▐●    ▌",
-    "▐ ●   ▌",
-    "▐  ●  ▌",
-    "▐   ● ▌",
-    "▐    ●▌",
-    "▐   ● ▌",
-    "▐  ●  ▌",
-    "▐ ●   ▌",
-    "▐     ▌",
-];
-
-/// One-line build status on stderr: KITT spinner, side-tinted "building
-/// base/candidate" label, the latest cargo status line, and elapsed time.
-/// Once cargo reports its unit counts (`Building x/y`), the line upgrades to
-/// a real progress bar showing `done/total` crates. `new` returns None when
-/// `side` is None (--no-progress) or stderr is not a terminal — callers then
-/// stream cargo's output unchanged instead.
+/// One-line build status on stderr: side-tinted "building base/candidate"
+/// label, elapsed time, and the latest cargo status line. Once cargo reports
+/// its unit counts (`Building x/y`), the line upgrades to a real progress bar
+/// showing `done/total` crates. `new` returns None when `side` is None
+/// (--no-progress) or stderr is not a terminal — callers then stream cargo's
+/// output unchanged instead.
 pub struct BuildBar {
     bar: ProgressBar,
     side: Side,
@@ -174,7 +158,7 @@ impl BuildBar {
             return None;
         }
         let bar = ProgressBar::new_spinner();
-        bar.set_style(build_spinner_style(side));
+        bar.set_style(build_start_style(side));
         bar.set_prefix(format!("building {}", side_label(side)));
         bar.set_message("starting cargo");
         bar.enable_steady_tick(Duration::from_millis(100));
@@ -211,47 +195,45 @@ impl Drop for BuildBar {
     }
 }
 
-fn build_spinner_style(side: Side) -> ProgressStyle {
+/// Pre-sized phase, before cargo has reported unit counts.
+fn build_start_style(side: Side) -> ProgressStyle {
     let color = side_color(side);
     ProgressStyle::with_template(&format!(
-        "{{spinner}} {{prefix:.{color}.bold}} · {{elapsed}} · {{wide_msg}}"
+        "{{prefix:.{color}.bold}} · {{elapsed}} · {{wide_msg}}"
     ))
     .expect("progress template must parse")
-    .tick_strings(TICK_FRAMES)
 }
 
 fn build_bar_style(side: Side) -> ProgressStyle {
     let color = side_color(side);
     let width = bar_width();
     ProgressStyle::with_template(&format!(
-        "{{spinner}} {{bar:{width}}} {{pos:>3}}/{{len:<3}} · {{prefix:.{color}.bold}} · {{elapsed}} · {{wide_msg}}"
+        "{{bar:{width}}} {{pos:>3}}/{{len:<3}} · {{prefix:.{color}.bold}} · {{elapsed}} · {{wide_msg}}"
     ))
     .expect("progress template must parse")
     .progress_chars("█▉▊▋▌▍▎▏░")
-    .tick_strings(TICK_FRAMES)
 }
 
 /// Bar cell width, adapted to the terminal: 42 cells when there is room,
 /// shrinking on narrow terminals so the counts, prefix, and message still
-/// fit (they need roughly 60 columns).
+/// fit (they need roughly 52 columns).
 fn bar_width() -> usize {
     let (_, cols) = console::Term::stderr().size();
-    usize::from(cols).saturating_sub(60).clamp(10, 42)
+    usize::from(cols).saturating_sub(52).clamp(10, 42)
 }
 
-/// Spinner and bar stay uncolored; only the "run X/Y · side" prefix is tinted
-/// by the side currently measured: cyan = base, magenta = candidate. Styling
-/// lives entirely in the template so the prefix/message helpers stay plain,
+/// The bar stays uncolored; only the "run X/Y · side" prefix is tinted by the
+/// side currently measured: cyan = base, magenta = candidate. Styling lives
+/// entirely in the template so the prefix/message helpers stay plain,
 /// testable strings.
 fn bar_style(side: Side) -> ProgressStyle {
     let color = side_color(side);
     let width = bar_width();
     ProgressStyle::with_template(&format!(
-        "{{spinner}} {{bar:{width}}} {{percent:>3.bold}}% · {{prefix:.{color}.bold}} · {{wide_msg}}"
+        "{{bar:{width}}} {{percent:>3.bold}}% · {{prefix:.{color}.bold}} · {{wide_msg}}"
     ))
     .expect("progress template must parse")
     .progress_chars("█▉▊▋▌▍▎▏░")
-    .tick_strings(TICK_FRAMES)
 }
 
 fn side_color(side: Side) -> &'static str {
@@ -478,14 +460,6 @@ mod tests {
     }
 
     #[test]
-    fn tick_frames_share_one_width() {
-        // frames of differing widths would make the line jitter every tick
-        for frame in TICK_FRAMES {
-            assert_eq!(frame.chars().count(), 7, "frame {frame:?}");
-        }
-    }
-
-    #[test]
     fn bar_width_stays_within_bounds() {
         // regardless of the (possibly undetectable) terminal size, the bar
         // must stay drawable and leave room for the text fields
@@ -498,7 +472,7 @@ mod tests {
         // build-drain threads would swallow that panic, so pin it down here
         for side in [Side::Base, Side::Candidate] {
             let _ = bar_style(side);
-            let _ = build_spinner_style(side);
+            let _ = build_start_style(side);
             let _ = build_bar_style(side);
         }
     }
