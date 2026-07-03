@@ -15,6 +15,7 @@ mod workspace;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 
@@ -32,6 +33,7 @@ fn main() {
 }
 
 fn real_main() -> Result<()> {
+    let started = Instant::now();
     let cli = Cli::parse_from_env();
     match &cli.command {
         Some(Sub::Completions(args)) => return completions::run(args),
@@ -201,6 +203,7 @@ fn real_main() -> Result<()> {
         ),
     });
 
+    let mut args_label = None;
     let (results, only_in_base, only_in_candidate, mode_name, mode_label, metric_label, reps_label) =
         match &mode {
             Mode::Binary {
@@ -261,6 +264,7 @@ fn real_main() -> Result<()> {
                     summarize(&base_values),
                     summarize(&candidate_values),
                 );
+                args_label = (!args.is_empty()).then(|| args.join(" "));
                 (
                     vec![comparison],
                     Vec::new(),
@@ -346,6 +350,7 @@ fn real_main() -> Result<()> {
                 )
             }
         };
+    let total_runtime = started.elapsed();
 
     if cli.json {
         report::print_json(report::JsonReportInput {
@@ -355,6 +360,7 @@ fn real_main() -> Result<()> {
             base: &base,
             candidate: &candidate,
             build: build_mode,
+            total_runtime,
             pinned_core,
             governor: governor.as_deref(),
             governor_set_by_tool,
@@ -369,6 +375,7 @@ fn real_main() -> Result<()> {
             profile: &cli.profile,
             mode_label,
             metric_label,
+            args_label,
             reps_label,
             pinned_label,
             governor,
@@ -376,6 +383,7 @@ fn real_main() -> Result<()> {
             base: &base,
             candidate: &candidate,
             build: build_mode,
+            total_runtime,
             results: &results,
             only_in_base: &only_in_base,
             only_in_candidate: &only_in_candidate,

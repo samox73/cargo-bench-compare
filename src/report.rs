@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::Serialize;
+use std::time::Duration;
 
 use crate::cli::MetricSource;
 use crate::git::ResolvedRev;
@@ -40,11 +41,23 @@ fn fmt_summary(summary: &Summary, unit: &str) -> String {
     )
 }
 
+fn fmt_duration(duration: Duration) -> String {
+    let secs = duration.as_secs_f64();
+    if secs >= 3600.0 {
+        format!("{:.1}h", secs / 3600.0)
+    } else if secs >= 60.0 {
+        format!("{:.1}m", secs / 60.0)
+    } else {
+        format!("{secs:.1}s")
+    }
+}
+
 pub struct HumanReport<'a> {
     pub package: &'a str,
     pub profile: &'a str,
     pub mode_label: String,
     pub metric_label: Option<String>,
+    pub args_label: Option<String>,
     pub reps_label: String,
     pub pinned_label: String,
     pub governor: Option<String>,
@@ -52,6 +65,7 @@ pub struct HumanReport<'a> {
     pub base: &'a ResolvedRev,
     pub candidate: &'a ResolvedRev,
     pub build: &'a str,
+    pub total_runtime: Duration,
     pub results: &'a [Comparison],
     pub only_in_base: &'a [String],
     pub only_in_candidate: &'a [String],
@@ -67,6 +81,9 @@ pub fn print_human(r: HumanReport<'_>) {
     if let Some(metric) = r.metric_label {
         settings.push(("metric", metric));
     }
+    if let Some(args) = r.args_label {
+        settings.push(("args", args));
+    }
     settings.push(("pinning", r.pinned_label));
     if let Some(governor) = r.governor {
         settings.push((
@@ -79,6 +96,7 @@ pub fn print_human(r: HumanReport<'_>) {
         ));
     }
     settings.push(("build", r.build.to_owned()));
+    settings.push(("runtime", fmt_duration(r.total_runtime)));
     settings.push(("RUSTFLAGS", "-C target-cpu=native".to_owned()));
     settings.push(("base", format!("{} ({})", r.base.spec, r.base.short)));
     settings.push((
@@ -190,6 +208,7 @@ struct JsonReport<'a> {
     base: &'a ResolvedRev,
     candidate: &'a ResolvedRev,
     build: &'a str,
+    total_runtime_secs: f64,
     pinned_core: Option<u32>,
     governor: Option<&'a str>,
     governor_set_by_tool: bool,
@@ -206,6 +225,7 @@ pub struct JsonReportInput<'a> {
     pub base: &'a ResolvedRev,
     pub candidate: &'a ResolvedRev,
     pub build: &'a str,
+    pub total_runtime: Duration,
     pub pinned_core: Option<u32>,
     pub governor: Option<&'a str>,
     pub governor_set_by_tool: bool,
@@ -225,6 +245,7 @@ pub fn print_json(input: JsonReportInput<'_>) -> Result<()> {
         base: input.base,
         candidate: input.candidate,
         build: input.build,
+        total_runtime_secs: input.total_runtime.as_secs_f64(),
         pinned_core: input.pinned_core,
         governor: input.governor,
         governor_set_by_tool: input.governor_set_by_tool,
@@ -278,6 +299,13 @@ mod tests {
             fmt_summary(&summary, "metric"),
             "100.0000 ± 12.8000 (± 12.8%)"
         );
+    }
+
+    #[test]
+    fn duration_formats_total_runtime() {
+        assert_eq!(fmt_duration(Duration::from_secs_f64(4.24)), "4.2s");
+        assert_eq!(fmt_duration(Duration::from_secs(90)), "1.5m");
+        assert_eq!(fmt_duration(Duration::from_secs(7200)), "2.0h");
     }
 
     fn sample_results() -> Vec<[String; 5]> {
