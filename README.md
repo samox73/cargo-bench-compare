@@ -169,9 +169,14 @@ cores instead. Systems without cpufreq support, common in some VMs and
 containers, stay silent because there is no governor to change.
 
 Pass `--set-governor` to temporarily set the pinned core's governor to
-`performance` for the run. This is opt-in because it may prompt for sudo. The
-previous governor is restored automatically on exit, including Ctrl-C. A process
-killed with SIGKILL cannot restore it; fix that manually with:
+`performance` for the run. This is opt-in because it may prompt for sudo — once,
+at the start. While the credentials are still fresh, the tool arms a small
+pre-authorized root helper that restores the previous governor the moment the
+tool exits, so a long run never prompts a second time on exit and the restore
+also survives Ctrl-C, SIGKILL, and a closed terminal. If the helper cannot be
+armed (e.g. sudo is configured to never cache credentials), the restore falls
+back to sudo on exit and may prompt again; should that fail too, the tool prints
+the manual fix:
 
 ```bash
 echo <previous-governor> | sudo tee /sys/devices/system/cpu/cpu<N>/cpufreq/scaling_governor

@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 use anyhow::{Context, Result, anyhow};
 
@@ -90,10 +90,16 @@ pub fn validate_core(sysfs: &Path, core: u32) -> Result<()> {
 }
 
 /// RAII: restores the previous governor on drop (best effort, never panics).
+///
+/// When the initial write needed sudo, `helper` holds a pre-authorized root
+/// process whose stdin we keep open; it restores the governor as soon as that
+/// pipe closes — on drop, but also when this process dies without unwinding
+/// (SIGKILL, closed terminal).
 pub struct GovernorGuard {
     sysfs: PathBuf,
     core: u32,
     previous: String,
+    helper: Option<Child>,
 }
 
 impl GovernorGuard {
@@ -104,6 +110,14 @@ impl GovernorGuard {
 
 impl Drop for GovernorGuard {
     fn drop(&mut self) {
+        if let Some(mut helper) = self.helper.take() {
+            drop(helper.stdin.take());
+            let restored = helper.wait().is_ok_and(|status| status.success())
+                && governor_of(&self.sysfs, self.core).as_deref() == Some(&self.previous);
+            if restored {
+                return;
+            }
+        }
         if let Err(err) = write_governor(
             &self.sysfs,
             self.core,
@@ -148,19 +162,33 @@ pub fn set_performance(sysfs: &Path, core: u32) -> Result<SetOutcome> {
     }
 
     match write_governor(sysfs, core, "performance", "will be restored on exit") {
-        Ok(()) => Ok(SetOutcome::Changed(GovernorGuard {
-            sysfs: sysfs.to_owned(),
-            core,
-            previous,
-        })),
+        Ok(method) => {
+            let helper = match method {
+                // sudo credentials are hot right now; arm the restore while
+                // they are, so exiting never has to prompt again
+                WriteMethod::Sudo => spawn_restore_helper(sysfs, core, &previous),
+                WriteMethod::Direct => None,
+            };
+            Ok(SetOutcome::Changed(GovernorGuard {
+                sysfs: sysfs.to_owned(),
+                core,
+                previous,
+                helper,
+            }))
+        }
         Err(err) => Ok(SetOutcome::Skipped(err.to_string())),
     }
 }
 
-fn write_governor(sysfs: &Path, core: u32, value: &str, why: &str) -> Result<()> {
+enum WriteMethod {
+    Direct,
+    Sudo,
+}
+
+fn write_governor(sysfs: &Path, core: u32, value: &str, why: &str) -> Result<WriteMethod> {
     let path = governor_path(sysfs, core);
     match std::fs::write(&path, value) {
-        Ok(()) => return Ok(()),
+        Ok(()) => return Ok(WriteMethod::Direct),
         Err(err)
             if err.kind() == std::io::ErrorKind::PermissionDenied && sysfs.starts_with("/sys") => {}
         Err(err) => {
@@ -169,7 +197,7 @@ fn write_governor(sysfs: &Path, core: u32, value: &str, why: &str) -> Result<()>
     }
 
     // announce sudo only when it will actually prompt; with cached credentials
-    // (typical for the restore on exit) or NOPASSWD the write happens silently
+    // or NOPASSWD the write happens silently
     if !sudo_is_passwordless() {
         eprintln!("requesting sudo to write the CPU governor ({why})");
     }
@@ -190,7 +218,33 @@ fn write_governor(sysfs: &Path, core: u32, value: &str, why: &str) -> Result<()>
     if !status.success() {
         return Err(anyhow!("sudo tee {} failed", path.display()));
     }
-    Ok(())
+    Ok(WriteMethod::Sudo)
+}
+
+fn restore_script(path: &Path, previous: &str) -> String {
+    // signals are ignored (not trapped-and-handled) so the restore cannot be
+    // interrupted by the Ctrl-C that ends the run
+    format!(
+        "trap '' INT TERM HUP; cat >/dev/null; printf %s '{previous}' > '{}'",
+        path.display()
+    )
+}
+
+/// Root process that restores the previous governor when our stdin-pipe to it
+/// closes: on guard drop, but equally on SIGKILL or a closed terminal, where
+/// no Drop ever runs. `sudo -n` never prompts (no cached credentials → the
+/// helper fails fast and the guard falls back to the old sudo-on-drop path),
+/// and its own process group keeps terminal-generated SIGINT away from it.
+fn spawn_restore_helper(sysfs: &Path, core: u32, previous: &str) -> Option<Child> {
+    let script = restore_script(&governor_path(sysfs, core), previous);
+    let mut cmd = Command::new("sudo");
+    cmd.args(["-n", "sh", "-c", &script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    cmd.spawn().ok()
 }
 
 fn sudo_is_passwordless() -> bool {
@@ -297,6 +351,50 @@ mod tests {
         assert_eq!(governor_of(&sysfs.0, 3).as_deref(), Some("performance"));
         drop(guard);
         assert_eq!(governor_of(&sysfs.0, 3).as_deref(), Some("powersave"));
+    }
+
+    #[test]
+    fn restore_script_ignores_signals_and_quotes_values() {
+        let script = restore_script(Path::new("/sys/devices/x/scaling_governor"), "powersave");
+        assert!(script.starts_with("trap '' INT TERM HUP;"));
+        assert!(script.contains("printf %s 'powersave' > '/sys/devices/x/scaling_governor'"));
+    }
+
+    #[test]
+    fn drop_restores_via_helper_pipe_close() {
+        let sysfs = fake_sysfs("helper", &[(1, "performance", "performance powersave")]);
+        let script = restore_script(&governor_path(&sysfs.0, 1), "powersave");
+        let helper = Command::new("sh")
+            .args(["-c", &script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        drop(GovernorGuard {
+            sysfs: sysfs.0.clone(),
+            core: 1,
+            previous: "powersave".to_owned(),
+            helper: Some(helper),
+        });
+        assert_eq!(governor_of(&sysfs.0, 1).as_deref(), Some("powersave"));
+    }
+
+    #[test]
+    fn drop_falls_back_when_helper_died() {
+        let sysfs = fake_sysfs("helper-dead", &[(2, "performance", "performance powersave")]);
+        let helper = Command::new("sh")
+            .args(["-c", "exit 1"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(GovernorGuard {
+            sysfs: sysfs.0.clone(),
+            core: 2,
+            previous: "powersave".to_owned(),
+            helper: Some(helper),
+        });
+        assert_eq!(governor_of(&sysfs.0, 2).as_deref(), Some("powersave"));
     }
 
     #[test]
