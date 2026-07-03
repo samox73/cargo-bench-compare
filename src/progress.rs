@@ -157,26 +157,86 @@ const TICK_FRAMES: &[&str] = &[
 
 /// One-line build status on stderr: KITT spinner, side-tinted "building
 /// base/candidate" label, the latest cargo status line, and elapsed time.
-/// Returns None when `side` is None (--no-progress) or stderr is not a
-/// terminal — callers then stream cargo's output unchanged instead.
-pub fn build_status_bar(side: Option<Side>) -> Option<ProgressBar> {
-    let side = side?;
-    if !std::io::stderr().is_terminal() {
-        return None;
+/// Once cargo reports its unit counts (`Building x/y`), the line upgrades to
+/// a real progress bar showing `done/total` crates. `new` returns None when
+/// `side` is None (--no-progress) or stderr is not a terminal — callers then
+/// stream cargo's output unchanged instead.
+pub struct BuildBar {
+    bar: ProgressBar,
+    side: Side,
+    sized: bool,
+}
+
+impl BuildBar {
+    pub fn new(side: Option<Side>) -> Option<BuildBar> {
+        let side = side?;
+        if !std::io::stderr().is_terminal() {
+            return None;
+        }
+        let bar = ProgressBar::new_spinner();
+        bar.set_style(build_spinner_style(side));
+        bar.set_prefix(format!("building {}", side_label(side)));
+        bar.set_message("starting cargo");
+        bar.enable_steady_tick(Duration::from_millis(100));
+        Some(BuildBar {
+            bar,
+            side,
+            sized: false,
+        })
     }
+
+    pub fn message(&self, text: String) {
+        self.bar.set_message(text);
+    }
+
+    /// Feed cargo's `Building done/total` unit counts; the first call switches
+    /// the line from spinner-only to a sized progress bar.
+    pub fn progress(&mut self, done: u64, total: u64) {
+        if !self.sized {
+            self.bar.set_style(build_bar_style(self.side));
+            self.sized = true;
+        }
+        self.bar.set_length(total.max(1));
+        self.bar.set_position(done.min(total));
+    }
+
+    pub fn finish(&self) {
+        self.bar.finish_and_clear();
+    }
+}
+
+impl Drop for BuildBar {
+    fn drop(&mut self) {
+        self.bar.finish_and_clear();
+    }
+}
+
+fn build_spinner_style(side: Side) -> ProgressStyle {
     let color = side_color(side);
-    let bar = ProgressBar::new_spinner();
-    bar.set_style(
-        ProgressStyle::with_template(&format!(
-            "{{spinner}} {{prefix:.{color}.bold}} · {{msg}} · {{elapsed}}"
-        ))
-        .expect("progress template must parse")
-        .tick_strings(TICK_FRAMES),
-    );
-    bar.set_prefix(format!("building {}", side_label(side)));
-    bar.set_message("starting cargo");
-    bar.enable_steady_tick(Duration::from_millis(100));
-    Some(bar)
+    ProgressStyle::with_template(&format!(
+        "{{spinner}} {{prefix:.{color}.bold}} · {{msg}} · {{elapsed}}"
+    ))
+    .expect("progress template must parse")
+    .tick_strings(TICK_FRAMES)
+}
+
+fn build_bar_style(side: Side) -> ProgressStyle {
+    let color = side_color(side);
+    let width = bar_width();
+    ProgressStyle::with_template(&format!(
+        "{{spinner}} {{bar:{width}}} {{pos:>3}}/{{len:<3}} · {{prefix:.{color}.bold}} · {{msg}} · {{elapsed}}"
+    ))
+    .expect("progress template must parse")
+    .progress_chars("█▉▊▋▌▍▎▏░")
+    .tick_strings(TICK_FRAMES)
+}
+
+/// Bar cell width, adapted to the terminal: 42 cells when there is room,
+/// shrinking on narrow terminals so the counts, prefix, and message still
+/// fit (they need roughly 60 columns).
+fn bar_width() -> usize {
+    let (_, cols) = console::Term::stderr().size();
+    usize::from(cols).saturating_sub(60).clamp(10, 42)
 }
 
 /// Spinner and bar stay uncolored; only the "run X/Y · side" prefix is tinted
@@ -185,8 +245,9 @@ pub fn build_status_bar(side: Option<Side>) -> Option<ProgressBar> {
 /// testable strings.
 fn bar_style(side: Side) -> ProgressStyle {
     let color = side_color(side);
+    let width = bar_width();
     ProgressStyle::with_template(&format!(
-        "{{spinner}} {{bar:42}} {{percent:>3.bold}}% · {{prefix:.{color}.bold}} · {{msg}}"
+        "{{spinner}} {{bar:{width}}} {{percent:>3.bold}}% · {{prefix:.{color}.bold}} · {{msg}}"
     ))
     .expect("progress template must parse")
     .progress_chars("█▉▊▋▌▍▎▏░")
@@ -331,6 +392,16 @@ impl LineScanner {
             }
         }
     }
+
+    /// Flush a trailing unterminated line, if any.
+    pub fn finish(&mut self, on_line: &mut dyn FnMut(&str)) {
+        if !self.discarding && !self.partial.is_empty() {
+            let line = String::from_utf8_lossy(&self.partial);
+            on_line(&line);
+        }
+        self.partial.clear();
+        self.discarding = false;
+    }
 }
 
 #[cfg(test)]
@@ -415,11 +486,32 @@ mod tests {
     }
 
     #[test]
+    fn bar_width_stays_within_bounds() {
+        // regardless of the (possibly undetectable) terminal size, the bar
+        // must stay drawable and leave room for the text fields
+        assert!((10..=42).contains(&bar_width()));
+    }
+
+    #[test]
     fn bar_styles_parse_for_both_sides() {
-        // bar_style panics on an invalid template; the render thread would
-        // swallow that panic, so pin it down here
-        let _ = bar_style(Side::Base);
-        let _ = bar_style(Side::Candidate);
+        // the style constructors panic on an invalid template; the render and
+        // build-drain threads would swallow that panic, so pin it down here
+        for side in [Side::Base, Side::Candidate] {
+            let _ = bar_style(side);
+            let _ = build_spinner_style(side);
+            let _ = build_bar_style(side);
+        }
+    }
+
+    #[test]
+    fn line_scanner_finish_flushes_trailing_partial() {
+        let mut scanner = LineScanner::default();
+        let mut lines = Vec::new();
+        scanner.push(b"done\ntail without newline", &mut |line| {
+            lines.push(line.to_owned())
+        });
+        scanner.finish(&mut |line| lines.push(line.to_owned()));
+        assert_eq!(lines, ["done", "tail without newline"]);
     }
 
     #[test]

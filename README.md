@@ -103,10 +103,11 @@ The benchmarked process pays for its own printing, so rate-limit progress output
 to roughly 10 lines/sec to keep the measurement clean.
 
 Builds are summarized the same way: instead of streaming every `Compiling …`
-line, a single status line per side shows the crate cargo is currently
-compiling, a crate counter, and elapsed time. Cargo's full output still streams
-when stderr is not a terminal or with `--no-progress`, and build failures always
-print the captured diagnostics.
+line, a single line per side shows a progress bar over cargo's total unit count
+(`45/128` crates), the crate currently compiling, and elapsed time. Cargo's
+full output still streams when stderr is not a terminal or with `--no-progress`,
+and build failures always print the captured diagnostics. All bars adapt their
+width to the terminal.
 
 ## Revisions and defaults
 

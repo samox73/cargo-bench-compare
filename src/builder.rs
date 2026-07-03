@@ -66,7 +66,8 @@ fn forward_stderr_line(line: &[u8]) {
 }
 
 enum BuildLine {
-    Compiling(String),
+    /// Cargo's forced progress meter: `Building [===>  ] 45/128: serde, syn`.
+    Progress { done: u64, total: u64 },
     Status(String),
     Warning,
     Other,
@@ -74,10 +75,13 @@ enum BuildLine {
 
 fn classify_build_line(line: &str) -> BuildLine {
     let trimmed = line.trim();
-    if trimmed.starts_with("Compiling ") {
-        return BuildLine::Compiling(trimmed.to_owned());
+    if trimmed.starts_with("Building ")
+        && let Some((done, total)) = parse_build_progress(trimmed)
+    {
+        return BuildLine::Progress { done, total };
     }
     for status in [
+        "Compiling ",
         "Downloading ",
         "Downloaded ",
         "Updating ",
@@ -95,39 +99,52 @@ fn classify_build_line(line: &str) -> BuildLine {
     BuildLine::Other
 }
 
-/// Drain a cargo build's stderr. With a status bar (TTY, progress enabled):
-/// a single updating line shows the crate currently compiled and a counter,
-/// while everything read is still captured for error reporting. Without one:
-/// tee through like before.
-fn drain_build_stderr(mut stderr: impl std::io::Read, status: Option<Side>) -> Vec<u8> {
-    let Some(bar) = progress::build_status_bar(status) else {
+fn parse_build_progress(line: &str) -> Option<(u64, u64)> {
+    for token in line.split_whitespace() {
+        let token = token.trim_end_matches(':');
+        if let Some((done, total)) = token.split_once('/')
+            && let (Ok(done), Ok(total)) = (done.parse::<u64>(), total.parse::<u64>())
+        {
+            return Some((done, total));
+        }
+    }
+    None
+}
+
+/// Drain a cargo build's stderr. With a build bar (TTY, progress enabled): a
+/// single updating line shows crate counts and the crate currently compiled,
+/// while every line except cargo's progress-meter spam is still captured for
+/// error reporting. Without one: tee through like before.
+fn drain_build_stderr(mut stderr: impl std::io::Read, bar: Option<progress::BuildBar>) -> Vec<u8> {
+    let Some(mut bar) = bar else {
         return tee_stderr_filtered(stderr);
     };
     let mut bytes = Vec::new();
     let mut scanner = progress::LineScanner::default();
-    let mut compiled: u32 = 0;
     let mut warnings = false;
     let mut buf = [0_u8; 8192];
+    let mut on_line = |line: &str| {
+        match classify_build_line(line) {
+            BuildLine::Progress { done, total } => {
+                bar.progress(done, total);
+                return; // meter updates are ephemeral; keep them out of the capture
+            }
+            BuildLine::Status(text) => bar.message(text),
+            BuildLine::Warning => warnings = true,
+            BuildLine::Other => {}
+        }
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+    };
     loop {
         match std::io::Read::read(&mut stderr, &mut buf) {
             Ok(0) => break,
-            Ok(n) => {
-                bytes.extend_from_slice(&buf[..n]);
-                scanner.push(&buf[..n], &mut |line| match classify_build_line(line) {
-                    BuildLine::Compiling(text) => {
-                        compiled += 1;
-                        let noun = if compiled == 1 { "crate" } else { "crates" };
-                        bar.set_message(format!("{text} · {compiled} {noun}"));
-                    }
-                    BuildLine::Status(text) => bar.set_message(text),
-                    BuildLine::Warning => warnings = true,
-                    BuildLine::Other => {}
-                });
-            }
+            Ok(n) => scanner.push(&buf[..n], &mut on_line),
             Err(_) => break,
         }
     }
-    bar.finish_and_clear();
+    scanner.finish(&mut on_line);
+    bar.finish();
     if warnings {
         eprintln!("warning: cargo emitted warnings during the build (hidden by the status line)");
     }
@@ -139,18 +156,23 @@ fn run_cargo_capture_stdout(
     args: &[String],
     status_side: Option<Side>,
 ) -> Result<String> {
-    let mut child = Command::new("cargo")
-        .args(args)
+    let bar = progress::BuildBar::new(status_side);
+    let mut cmd = Command::new("cargo");
+    cmd.args(args)
         .current_dir(wt_ws_root)
         .env("RUSTFLAGS", "-C target-cpu=native")
-        .env("CARGO_TARGET_DIR", target_dir(wt_ws_root))
+        .env("CARGO_TARGET_DIR", target_dir(wt_ws_root));
+    if bar.is_some() {
+        force_cargo_progress_meter(&mut cmd);
+    }
+    let mut child = cmd
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
         .with_context(|| "failed to run cargo")?;
 
     let stderr = child.stderr.take().expect("stderr piped");
-    let stderr_thread = std::thread::spawn(move || drain_build_stderr(stderr, status_side));
+    let stderr_thread = std::thread::spawn(move || drain_build_stderr(stderr, bar));
 
     let mut stdout = Vec::new();
     std::io::Read::read_to_end(child.stdout.as_mut().expect("stdout piped"), &mut stdout)?;
@@ -169,17 +191,30 @@ fn run_cargo_capture_stdout(
     Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
+/// Make cargo emit its `Building [===>  ] done/total` progress meter even
+/// though stderr is a pipe; drain_build_stderr parses the counts to size the
+/// build bar. The meter needs an explicit width when forced.
+fn force_cargo_progress_meter(cmd: &mut Command) {
+    cmd.env("CARGO_TERM_PROGRESS_WHEN", "always")
+        .env("CARGO_TERM_PROGRESS_WIDTH", "80");
+}
+
 fn run_cargo_status(
     wt_ws_root: &Path,
     args: &[String],
     json: bool,
     status_side: Option<Side>,
 ) -> Result<()> {
-    let mut child = Command::new("cargo")
-        .args(args)
+    let bar = progress::BuildBar::new(status_side);
+    let mut cmd = Command::new("cargo");
+    cmd.args(args)
         .current_dir(wt_ws_root)
         .env("RUSTFLAGS", "-C target-cpu=native")
-        .env("CARGO_TARGET_DIR", target_dir(wt_ws_root))
+        .env("CARGO_TARGET_DIR", target_dir(wt_ws_root));
+    if bar.is_some() {
+        force_cargo_progress_meter(&mut cmd);
+    }
+    let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -203,7 +238,7 @@ fn run_cargo_status(
         }
     });
     let stderr = child.stderr.take().expect("stderr piped");
-    let stderr_thread = std::thread::spawn(move || drain_build_stderr(stderr, status_side));
+    let stderr_thread = std::thread::spawn(move || drain_build_stderr(stderr, bar));
     let status = child.wait()?;
     let _ = stdout_thread.join();
     let stderr = stderr_thread.join().unwrap_or_default();
@@ -298,7 +333,7 @@ mod tests {
     fn classifies_cargo_build_lines() {
         assert!(matches!(
             classify_build_line("   Compiling proc-macro2 v1.0.106"),
-            BuildLine::Compiling(t) if t == "Compiling proc-macro2 v1.0.106"
+            BuildLine::Status(t) if t == "Compiling proc-macro2 v1.0.106"
         ));
         assert!(matches!(
             classify_build_line("    Blocking waiting for file lock on build directory"),
@@ -315,6 +350,26 @@ mod tests {
         ));
         assert!(matches!(
             classify_build_line("    Finished `release-tuned` profile [optimized] target(s)"),
+            BuildLine::Other
+        ));
+    }
+
+    #[test]
+    fn parses_cargo_progress_meter_counts() {
+        assert!(matches!(
+            classify_build_line("    Building [=======>              ] 45/128: serde, syn(build)"),
+            BuildLine::Progress {
+                done: 45,
+                total: 128
+            }
+        ));
+        assert!(matches!(
+            classify_build_line("Building [                        ] 0/93: quote"),
+            BuildLine::Progress { done: 0, total: 93 }
+        ));
+        // a Building line without counts must not be treated as progress
+        assert!(matches!(
+            classify_build_line("    Building something unrelated"),
             BuildLine::Other
         ));
     }
