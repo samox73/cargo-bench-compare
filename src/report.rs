@@ -3,7 +3,7 @@ use serde::Serialize;
 
 use crate::cli::MetricSource;
 use crate::git::ResolvedRev;
-use crate::stats::{Comparison, Verdict};
+use crate::stats::{Comparison, Summary, Verdict};
 
 pub fn fmt_ns(ns: f64) -> String {
     if ns >= 1e9 {
@@ -24,6 +24,20 @@ pub fn fmt_value(v: f64, unit: &str) -> String {
         "metric" => format!("{v:.4}"),
         _ => format!("{v:.4}"),
     }
+}
+
+fn fmt_summary(summary: &Summary, unit: &str) -> String {
+    let rel_std_dev = if summary.mean == 0.0 {
+        String::new()
+    } else {
+        format!(" (± {:.1}%)", summary.std_dev / summary.mean.abs() * 100.0)
+    };
+    format!(
+        "{} ± {}{}",
+        fmt_value(summary.mean, unit),
+        fmt_value(summary.std_dev, unit),
+        rel_std_dev
+    )
 }
 
 pub struct HumanReport<'a> {
@@ -80,16 +94,8 @@ pub fn print_human(r: HumanReport<'_>) {
         "verdict".to_owned(),
     ]];
     for cmp in r.results {
-        let base = format!(
-            "{} ± {}",
-            fmt_value(cmp.base.mean, &cmp.unit),
-            fmt_value(cmp.base.std_dev, &cmp.unit)
-        );
-        let candidate = format!(
-            "{} ± {}",
-            fmt_value(cmp.candidate.mean, &cmp.unit),
-            fmt_value(cmp.candidate.std_dev, &cmp.unit)
-        );
+        let base = fmt_summary(&cmp.base, &cmp.unit);
+        let candidate = fmt_summary(&cmp.candidate, &cmp.unit);
         let delta = if cmp.rel_diff_pct.is_nan() {
             "n/a".to_owned()
         } else {
@@ -257,6 +263,21 @@ mod tests {
     fn seconds_use_magnitude_adaptive_formatting() {
         assert_eq!(fmt_value(0.105, "s"), "105.00 ms");
         assert_eq!(fmt_value(0.0004, "s"), "400.00 µs");
+    }
+
+    #[test]
+    fn summary_shows_relative_std_dev() {
+        let summary = Summary {
+            n: 5,
+            mean: 100.0,
+            std_dev: 12.8,
+            min: 80.0,
+            max: 120.0,
+        };
+        assert_eq!(
+            fmt_summary(&summary, "metric"),
+            "100.0000 ± 12.8000 (± 12.8%)"
+        );
     }
 
     fn sample_results() -> Vec<[String; 5]> {
