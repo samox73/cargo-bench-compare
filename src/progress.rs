@@ -214,7 +214,7 @@ impl Drop for BuildBar {
 fn build_spinner_style(side: Side) -> ProgressStyle {
     let color = side_color(side);
     ProgressStyle::with_template(&format!(
-        "{{spinner}} {{prefix:.{color}.bold}} · {{msg}} · {{elapsed}}"
+        "{{spinner}} {{prefix:.{color}.bold}} · {{elapsed}} · {{wide_msg}}"
     ))
     .expect("progress template must parse")
     .tick_strings(TICK_FRAMES)
@@ -224,7 +224,7 @@ fn build_bar_style(side: Side) -> ProgressStyle {
     let color = side_color(side);
     let width = bar_width();
     ProgressStyle::with_template(&format!(
-        "{{spinner}} {{bar:{width}}} {{pos:>3}}/{{len:<3}} · {{prefix:.{color}.bold}} · {{msg}} · {{elapsed}}"
+        "{{spinner}} {{bar:{width}}} {{pos:>3}}/{{len:<3}} · {{prefix:.{color}.bold}} · {{elapsed}} · {{wide_msg}}"
     ))
     .expect("progress template must parse")
     .progress_chars("█▉▊▋▌▍▎▏░")
@@ -247,7 +247,7 @@ fn bar_style(side: Side) -> ProgressStyle {
     let color = side_color(side);
     let width = bar_width();
     ProgressStyle::with_template(&format!(
-        "{{spinner}} {{bar:{width}}} {{percent:>3.bold}}% · {{prefix:.{color}.bold}} · {{msg}}"
+        "{{spinner}} {{bar:{width}}} {{percent:>3.bold}}% · {{prefix:.{color}.bold}} · {{wide_msg}}"
     ))
     .expect("progress template must parse")
     .progress_chars("█▉▊▋▌▍▎▏░")

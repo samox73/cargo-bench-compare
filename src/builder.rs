@@ -90,7 +90,14 @@ fn classify_build_line(line: &str) -> BuildLine {
         "Checking ",
     ] {
         if trimmed.starts_with(status) {
-            return BuildLine::Status(trimmed.to_owned());
+            // drop parenthesized suffixes — for workspace members cargo appends
+            // the full manifest path, which is our own cache worktree and only
+            // bloats the status line
+            let text = match trimmed.find(" (") {
+                Some(cut) => &trimmed[..cut],
+                None => trimmed,
+            };
+            return BuildLine::Status(text.to_owned());
         }
     }
     if trimmed.starts_with("warning") {
@@ -334,6 +341,13 @@ mod tests {
         assert!(matches!(
             classify_build_line("   Compiling proc-macro2 v1.0.106"),
             BuildLine::Status(t) if t == "Compiling proc-macro2 v1.0.106"
+        ));
+        // the manifest path cargo appends for workspace members is stripped
+        assert!(matches!(
+            classify_build_line(
+                "   Compiling rmc-minimal v0.1.0 (/home/x/.cache/cargo-bench-compare/warm-base/crates/rmc-minimal)"
+            ),
+            BuildLine::Status(t) if t == "Compiling rmc-minimal v0.1.0"
         ));
         assert!(matches!(
             classify_build_line("    Blocking waiting for file lock on build directory"),
