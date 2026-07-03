@@ -6,6 +6,7 @@ mod completions;
 mod criterion;
 mod git;
 mod governor;
+mod isolation;
 mod progress;
 mod report;
 mod runner;
@@ -58,8 +59,12 @@ fn real_main() -> Result<()> {
             "candidate and base are both ':worktree'; nothing to compare"
         ));
     }
-    if cli.set_governor && !cfg!(target_os = "linux") {
-        return Err(anyhow!("--set-governor is only supported on Linux"));
+    let isolate_core = cli.isolate_core || cli.dedicate_core;
+    let set_governor = cli.set_governor || cli.dedicate_core;
+    if (set_governor || isolate_core) && !cfg!(target_os = "linux") {
+        return Err(anyhow!(
+            "--set-governor/--isolate-core/--dedicate-core are only supported on Linux"
+        ));
     }
 
     ctrlc::set_handler(|| CANCELLED.store(true, Ordering::SeqCst))?;
@@ -126,9 +131,36 @@ fn real_main() -> Result<()> {
         governor::validate_core(Path::new(governor::SYSFS_CPU), core)?;
     }
 
+    let mut _isolation_guard = None;
+    let mut isolation = None;
+    if isolate_core {
+        match pinned_core {
+            None => eprintln!(
+                "warning: --isolate-core skipped: run is not pinned (taskset unavailable)"
+            ),
+            Some(core) => match isolation::isolate(
+                Path::new(governor::SYSFS_CPU),
+                Path::new(isolation::PROC_IRQ),
+                core,
+            )? {
+                isolation::IsolateOutcome::Isolated { guard, boot } => {
+                    isolation = Some(if boot {
+                        "isolcpus (boot) + irqs"
+                    } else {
+                        "cgroups + irqs"
+                    });
+                    _isolation_guard = Some(guard);
+                }
+                isolation::IsolateOutcome::Skipped(reason) => {
+                    eprintln!("warning: --isolate-core skipped: {reason}");
+                }
+            },
+        }
+    }
+
     let mut _governor_guard = None;
     let mut governor_set_by_tool = false;
-    if cli.set_governor {
+    if set_governor {
         match pinned_core {
             None => eprintln!(
                 "warning: --set-governor skipped: run is not pinned (taskset unavailable)"
@@ -364,6 +396,7 @@ fn real_main() -> Result<()> {
             pinned_core,
             governor: governor.as_deref(),
             governor_set_by_tool,
+            isolation,
             dirty,
             results: &results,
             only_in_base: &only_in_base,
@@ -380,6 +413,7 @@ fn real_main() -> Result<()> {
             pinned_label,
             governor,
             governor_set_by_tool,
+            isolation: isolation.map(str::to_owned),
             base: &base,
             candidate: &candidate,
             build: build_mode,

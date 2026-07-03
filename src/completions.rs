@@ -32,6 +32,8 @@ export extern "cargo bench-compare" [
   --runs-on-core: int                                # CPU core to pin measurement runs to via taskset (default: 0)
   --no-pin                                           # disable CPU pinning
   --set-governor                                     # set the pinned core's governor to 'performance' for the run (restored on exit; may prompt for sudo)
+  --isolate-core                                     # evict other processes from the pinned core and steer IRQs away for the run (restored on exit; needs sudo/systemd)
+  --dedicate-core                                    # dedicate the pinned core: shorthand for --isolate-core --set-governor
   --profile: string@"nu-complete bcmp profiles"      # cargo profile used to build both revisions (default: release-tuned)
   --json                                             # emit machine-readable JSON instead of the human-readable table
   --cold                                             # build in fresh worktrees instead of the persistent warm ones
@@ -80,6 +82,8 @@ export extern "cargo-bench-compare" [
   --runs-on-core: int                                # CPU core to pin measurement runs to via taskset (default: 0)
   --no-pin                                           # disable CPU pinning
   --set-governor                                     # set the pinned core's governor to 'performance' for the run (restored on exit; may prompt for sudo)
+  --isolate-core                                     # evict other processes from the pinned core and steer IRQs away for the run (restored on exit; needs sudo/systemd)
+  --dedicate-core                                    # dedicate the pinned core: shorthand for --isolate-core --set-governor
   --profile: string@"nu-complete bcmp profiles"      # cargo profile used to build both revisions (default: release-tuned)
   --json                                             # emit machine-readable JSON instead of the human-readable table
   --cold                                             # build in fresh worktrees instead of the persistent warm ones

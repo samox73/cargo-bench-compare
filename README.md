@@ -159,7 +159,7 @@ cargo bench-compare cache clean --all
 The warm worktrees are normal git worktrees and appear in `git worktree list`.
 Manually removing them is safe; the next warm run recreates them.
 
-## CPU pinning and frequency governor
+## CPU pinning, frequency governor, and core isolation
 
 On Linux, measurement runs are pinned with `taskset` by default
 (`--runs-on-core 0`). Use `--runs-on-core <N>` to choose a different core, or
@@ -181,6 +181,30 @@ the manual fix:
 ```bash
 echo <previous-governor> | sudo tee /sys/devices/system/cpu/cpu<N>/cpufreq/scaling_governor
 ```
+
+Pass `--isolate-core` to evict other user and system processes from the pinned
+core for the duration of the run. It uses systemd runtime `AllowedCPUs` settings
+on `user.slice`, `system.slice`, and `init.scope`, first moving the tool itself
+into a sibling escape scope so benchmark children can still pin to the measured
+core. SMT siblings are evicted with the chosen core, hardware IRQ affinities are
+steered to the remaining housekeeping cores, and builds run on those
+housekeeping cores so the measured core stays quiet.
+
+Runtime isolation cannot move per-CPU kernel threads such as `kworker/N:*`,
+`migration/N`, or `ksoftirqd/N`, and it cannot remove the scheduler tick. For
+that, use boot parameters such as `isolcpus=` and `nohz_full=`; when the chosen
+core is already boot-isolated, the tool detects it and only steers IRQs. Changing
+cpusets can reset custom CPU affinities of other processes. If restoration fails
+after SIGKILL or a system failure, reset the runtime properties manually:
+
+```bash
+sudo systemctl set-property --runtime user.slice AllowedCPUs=
+sudo systemctl set-property --runtime system.slice AllowedCPUs=
+sudo systemctl set-property --runtime init.scope AllowedCPUs=
+```
+
+For serious measurement runs, `--dedicate-core` is the shorthand for
+`--isolate-core --set-governor`.
 
 ## Known Limitations
 

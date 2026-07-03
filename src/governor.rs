@@ -27,7 +27,7 @@ pub fn governor_of(sysfs: &Path, core: u32) -> Option<String> {
         .map(|s| s.trim().to_owned())
 }
 
-fn online_cores(sysfs: &Path) -> Vec<u32> {
+pub(crate) fn online_cores(sysfs: &Path) -> Vec<u32> {
     let Ok(entries) = std::fs::read_dir(sysfs) else {
         return Vec::new();
     };
@@ -247,7 +247,7 @@ fn spawn_restore_helper(sysfs: &Path, core: u32, previous: &str) -> Option<Child
     cmd.spawn().ok()
 }
 
-fn sudo_is_passwordless() -> bool {
+pub(crate) fn sudo_is_passwordless() -> bool {
     Command::new("sudo")
         .args(["-n", "true"])
         .stdout(Stdio::null())
@@ -382,7 +382,10 @@ mod tests {
 
     #[test]
     fn drop_falls_back_when_helper_died() {
-        let sysfs = fake_sysfs("helper-dead", &[(2, "performance", "performance powersave")]);
+        let sysfs = fake_sysfs(
+            "helper-dead",
+            &[(2, "performance", "performance powersave")],
+        );
         let helper = Command::new("sh")
             .args(["-c", "exit 1"])
             .stdin(Stdio::piped())

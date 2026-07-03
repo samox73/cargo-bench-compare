@@ -68,6 +68,12 @@ pub struct Cli {
     /// Set the pinned core's CPU governor to 'performance' for the duration of the run (restored on exit; may prompt for sudo)
     #[arg(long = "set-governor", conflicts_with = "no_pin")]
     pub set_governor: bool,
+    /// Evict other processes from the pinned core (and its SMT sibling) and steer hardware IRQs away for the duration of the run (restored on exit; needs sudo, systemd, cgroup v2)
+    #[arg(long = "isolate-core", conflicts_with = "no_pin")]
+    pub isolate_core: bool,
+    /// Dedicate the pinned core to the benchmark: shorthand for --isolate-core --set-governor
+    #[arg(long = "dedicate-core", conflicts_with = "no_pin")]
+    pub dedicate_core: bool,
     /// Cargo profile used to build both revisions
     #[arg(long = "profile", default_value = "release-tuned")]
     pub profile: String,
@@ -235,4 +241,20 @@ impl Cli {
 
 pub fn command() -> clap::Command {
     <Cli as CommandFactory>::command()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_combined_flag() {
+        assert!(
+            Cli::try_parse_from(["bcmp", "--dedicate-core", "--no-pin", "--bin", "x"]).is_err()
+        );
+        let cli = Cli::try_parse_from(["bcmp", "--dedicate-core", "--bin", "x"]).unwrap();
+        assert!(cli.dedicate_core);
+        assert!(!cli.isolate_core);
+        assert!(!cli.set_governor);
+    }
 }

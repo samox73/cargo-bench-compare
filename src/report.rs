@@ -62,6 +62,7 @@ pub struct HumanReport<'a> {
     pub pinned_label: String,
     pub governor: Option<String>,
     pub governor_set_by_tool: bool,
+    pub isolation: Option<String>,
     pub base: &'a ResolvedRev,
     pub candidate: &'a ResolvedRev,
     pub build: &'a str,
@@ -94,6 +95,9 @@ pub fn print_human(r: HumanReport<'_>) {
                 governor
             },
         ));
+    }
+    if let Some(isolation) = r.isolation {
+        settings.push(("isolation", isolation));
     }
     settings.push(("build", r.build.to_owned()));
     settings.push(("runtime", fmt_duration(r.total_runtime)));
@@ -212,6 +216,7 @@ struct JsonReport<'a> {
     pinned_core: Option<u32>,
     governor: Option<&'a str>,
     governor_set_by_tool: bool,
+    isolation: Option<&'a str>,
     dirty_worktree: bool,
     results: &'a [Comparison],
     only_in_base: &'a [String],
@@ -229,6 +234,7 @@ pub struct JsonReportInput<'a> {
     pub pinned_core: Option<u32>,
     pub governor: Option<&'a str>,
     pub governor_set_by_tool: bool,
+    pub isolation: Option<&'a str>,
     pub dirty: bool,
     pub results: &'a [Comparison],
     pub only_in_base: &'a [String],
@@ -249,6 +255,7 @@ pub fn print_json(input: JsonReportInput<'_>) -> Result<()> {
         pinned_core: input.pinned_core,
         governor: input.governor,
         governor_set_by_tool: input.governor_set_by_tool,
+        isolation: input.isolation,
         dirty_worktree: input.dirty,
         results: input.results,
         only_in_base: input.only_in_base,
