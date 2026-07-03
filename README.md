@@ -53,9 +53,12 @@ cargo bench-compare completions bash
 ## Usage
 
 ```bash
-# Zero flags: your working tree exactly as it is (uncommitted changes included)
-# vs the commit your branch forked from — the everyday "did my work pay off?" call
-cargo bench-compare -p rmc-core --bench hot_path
+# Zero revision flags: your working tree exactly as it is (uncommitted changes included)
+# vs the commit your branch forked from — the everyday "did my work pay off?" call.
+# -p is optional when the target name is unambiguous in the workspace; required when
+# several packages share it:
+cargo bench-compare --bench hot_path
+cargo bench-compare -p rmc-core --bench hot_path  # explicit form
 
 # What did my uncommitted edits change, relative to my last commit?
 cargo bench-compare -p rmc-core --bench hot_path --rev :worktree --rev-base HEAD

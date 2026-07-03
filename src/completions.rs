@@ -18,7 +18,7 @@ def "nu-complete bcmp shells" [] { ["bash", "zsh", "fish", "elvish", "powershell
 def "nu-complete bcmp nothing" [] { [] }
 
 export extern "cargo bench-compare" [
-  --package(-p): string@"nu-complete bcmp packages"  # cargo package to benchmark
+  --package(-p): string@"nu-complete bcmp packages"  # cargo package (optional: inferred from --bin/--bench)
   --bench: string@"nu-complete bcmp benches"         # criterion benchmark target to run (criterion mode)
   --bin: string@"nu-complete bcmp bins"              # binary target to run (binary mode)
   --args: string                                     # arguments for the binary, split on whitespace (binary mode)
@@ -66,7 +66,7 @@ export extern "cargo bench-compare cache clean" [
 ]
 
 export extern "cargo-bench-compare" [
-  --package(-p): string@"nu-complete bcmp packages"  # cargo package to benchmark
+  --package(-p): string@"nu-complete bcmp packages"  # cargo package (optional: inferred from --bin/--bench)
   --bench: string@"nu-complete bcmp benches"         # criterion benchmark target to run (criterion mode)
   --bin: string@"nu-complete bcmp bins"              # binary target to run (binary mode)
   --args: string                                     # arguments for the binary, split on whitespace (binary mode)

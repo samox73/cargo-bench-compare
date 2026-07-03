@@ -6,6 +6,7 @@ use anyhow::{Result, anyhow};
 
 use crate::cli::CandidateKind;
 use crate::git;
+use crate::workspace;
 
 pub fn print(kind: CandidateKind) -> Result<()> {
     if let Ok(values) = candidates(
@@ -22,9 +23,9 @@ pub fn print(kind: CandidateKind) -> Result<()> {
 pub fn candidates(kind: CandidateKind, cwd: &Path) -> Result<Vec<String>> {
     match kind {
         CandidateKind::Revs => revs(cwd),
-        CandidateKind::Packages => metadata_names(cwd, TargetKind::Package),
-        CandidateKind::Bins => metadata_names(cwd, TargetKind::Bin),
-        CandidateKind::Benches => metadata_names(cwd, TargetKind::Bench),
+        CandidateKind::Packages => package_names(cwd),
+        CandidateKind::Bins => target_names(cwd, workspace::TargetKind::Bin),
+        CandidateKind::Benches => target_names(cwd, workspace::TargetKind::Bench),
         CandidateKind::Profiles => profiles(cwd),
     }
     .or_else(|_| Ok(Vec::new()))
@@ -59,13 +60,7 @@ fn revs(cwd: &Path) -> Result<Vec<String>> {
     Ok(values)
 }
 
-enum TargetKind {
-    Package,
-    Bin,
-    Bench,
-}
-
-fn metadata_names(cwd: &Path, kind: TargetKind) -> Result<Vec<String>> {
+fn package_names(cwd: &Path) -> Result<Vec<String>> {
     let json = metadata_json(cwd)?;
     let packages = json
         .get("packages")
@@ -73,36 +68,27 @@ fn metadata_names(cwd: &Path, kind: TargetKind) -> Result<Vec<String>> {
         .ok_or_else(|| anyhow!("cargo metadata output missing packages"))?;
     let mut values = BTreeSet::new();
     for package in packages {
-        match kind {
-            TargetKind::Package => {
-                if let Some(name) = package.get("name").and_then(serde_json::Value::as_str) {
-                    values.insert(name.to_owned());
-                }
-            }
-            TargetKind::Bin | TargetKind::Bench => {
-                let wanted = match kind {
-                    TargetKind::Bin => "bin",
-                    TargetKind::Bench => "bench",
-                    TargetKind::Package => unreachable!(),
-                };
-                if let Some(targets) = package.get("targets").and_then(serde_json::Value::as_array)
+        if let Some(name) = package.get("name").and_then(serde_json::Value::as_str) {
+            values.insert(name.to_owned());
+        }
+    }
+    Ok(values.into_iter().collect())
+}
+
+fn target_names(cwd: &Path, kind: workspace::TargetKind) -> Result<Vec<String>> {
+    let json = metadata_json(cwd)?;
+    let packages = json
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow!("cargo metadata output missing packages"))?;
+    let mut values = BTreeSet::new();
+    for package in packages {
+        if let Some(targets) = package.get("targets").and_then(serde_json::Value::as_array) {
+            for target in targets {
+                if workspace::target_has_kind(target, kind)
+                    && let Some(name) = target.get("name").and_then(serde_json::Value::as_str)
                 {
-                    for target in targets {
-                        let has_kind = target
-                            .get("kind")
-                            .and_then(serde_json::Value::as_array)
-                            .is_some_and(|kinds| {
-                                kinds
-                                    .iter()
-                                    .any(|item| item.as_str().is_some_and(|s| s == wanted))
-                            });
-                        if has_kind
-                            && let Some(name) =
-                                target.get("name").and_then(serde_json::Value::as_str)
-                        {
-                            values.insert(name.to_owned());
-                        }
-                    }
+                    values.insert(name.to_owned());
                 }
             }
         }

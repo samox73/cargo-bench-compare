@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 
 use crate::cli::{CacheSub, Cli, Mode, Sub};
 use crate::git::Cleanup;
@@ -46,7 +46,6 @@ fn real_main() -> Result<()> {
         None => {}
     }
     let mode = cli.mode()?;
-    let package = cli.package()?;
     let rev_spec = cli.rev.clone().unwrap_or_else(|| ":worktree".to_owned());
     let base_spec = cli
         .rev_base
@@ -64,7 +63,19 @@ fn real_main() -> Result<()> {
     ctrlc::set_handler(|| CANCELLED.store(true, Ordering::SeqCst))?;
 
     let repo_root = git::repo_root()?;
-    let workspace = workspace::load(&repo_root, package)?;
+    let cwd = std::env::current_dir()?;
+    let (target_kind, target_name) = match &mode {
+        Mode::Binary { bin, .. } => (workspace::TargetKind::Bin, bin.as_str()),
+        Mode::Criterion { bench } => (workspace::TargetKind::Bench, bench.as_str()),
+    };
+    let workspace = workspace::load(
+        &repo_root,
+        &cwd,
+        cli.package.as_deref(),
+        target_kind,
+        target_name,
+    )?;
+    let package = workspace.package.as_str();
     let dirty = git::is_dirty(&repo_root)?;
     let base = git::resolve_spec(&repo_root, &base_spec)?;
     let candidate = git::resolve_spec(&repo_root, &rev_spec)?;
@@ -179,6 +190,17 @@ fn real_main() -> Result<()> {
         .map(|core| format!("core {core} (taskset)"))
         .unwrap_or_else(|| "disabled".to_owned());
 
+    let infer_hint: Option<String> = cli.package.is_none().then(|| match &mode {
+        Mode::Binary { bin, .. } => format!(
+            "package '{package}' was inferred from --bin '{bin}' (working-tree metadata); \
+             if it is wrong for this revision, pass -p <package> explicitly"
+        ),
+        Mode::Criterion { bench } => format!(
+            "package '{package}' was inferred from --bench '{bench}' (working-tree metadata); \
+             if it is wrong for this revision, pass -p <package> explicitly"
+        ),
+    });
+
     let (results, only_in_base, only_in_candidate, mode_name, mode_label, metric_label, reps_label) =
         match &mode {
             Mode::Binary {
@@ -189,20 +211,26 @@ fn real_main() -> Result<()> {
             } => {
                 let reps = cli.reps.unwrap_or(5);
                 let status = |side| (!cli.no_progress).then_some(side);
-                let exe_base = builder::build_bin(
-                    &base_ws,
-                    package,
-                    bin,
-                    &cli.profile,
-                    status(progress::Side::Base),
+                let exe_base = apply_infer_hint(
+                    builder::build_bin(
+                        &base_ws,
+                        package,
+                        bin,
+                        &cli.profile,
+                        status(progress::Side::Base),
+                    ),
+                    infer_hint.as_deref(),
                 )?;
                 check_cancelled()?;
-                let exe_candidate = builder::build_bin(
-                    &candidate_ws,
-                    package,
-                    bin,
-                    &cli.profile,
-                    status(progress::Side::Candidate),
+                let exe_candidate = apply_infer_hint(
+                    builder::build_bin(
+                        &candidate_ws,
+                        package,
+                        bin,
+                        &cli.profile,
+                        status(progress::Side::Candidate),
+                    ),
+                    infer_hint.as_deref(),
                 )?;
                 check_cancelled()?;
                 let progress = progress::Progress::new(!cli.no_progress);
@@ -250,22 +278,28 @@ fn real_main() -> Result<()> {
                     );
                 }
                 let status = |side| (!cli.no_progress).then_some(side);
-                builder::build_bench(
-                    &base_ws,
-                    package,
-                    bench,
-                    &cli.profile,
-                    cli.json,
-                    status(progress::Side::Base),
+                apply_infer_hint(
+                    builder::build_bench(
+                        &base_ws,
+                        package,
+                        bench,
+                        &cli.profile,
+                        cli.json,
+                        status(progress::Side::Base),
+                    ),
+                    infer_hint.as_deref(),
                 )?;
                 check_cancelled()?;
-                builder::build_bench(
-                    &candidate_ws,
-                    package,
-                    bench,
-                    &cli.profile,
-                    cli.json,
-                    status(progress::Side::Candidate),
+                apply_infer_hint(
+                    builder::build_bench(
+                        &candidate_ws,
+                        package,
+                        bench,
+                        &cli.profile,
+                        cli.json,
+                        status(progress::Side::Candidate),
+                    ),
+                    infer_hint.as_deref(),
                 )?;
                 check_cancelled()?;
                 let base_label = format!("bcmp-{}", base.short);
@@ -371,6 +405,13 @@ fn build_mode(cold: bool, base_ws: &Path, candidate_ws: &Path) -> &'static str {
         "cold"
     } else {
         "warm"
+    }
+}
+
+fn apply_infer_hint<T>(result: Result<T>, hint: Option<&str>) -> Result<T> {
+    match hint {
+        Some(h) => result.context(h.to_owned()),
+        None => result,
     }
 }
 

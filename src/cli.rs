@@ -19,7 +19,7 @@ use regex::Regex;
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Sub>,
-    /// Cargo package to benchmark
+    /// Cargo package to benchmark [default: inferred from the --bin/--bench target when unambiguous]
     #[arg(short = 'p', long = "package")]
     pub package: Option<String>,
     /// Criterion benchmark target to run (criterion mode)
@@ -230,12 +230,6 @@ impl Cli {
             metric,
             progress,
         })
-    }
-
-    pub fn package(&self) -> Result<&str> {
-        self.package
-            .as_deref()
-            .ok_or_else(|| anyhow!("--package <PACKAGE> is required"))
     }
 }
 
