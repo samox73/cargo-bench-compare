@@ -50,6 +50,11 @@ cargo bench-compare completions nushell
 cargo bench-compare completions bash
 ```
 
+## Agent instructions
+
+AI coding agents should read `AGENTS.md`. Claude Code can use `CLAUDE.md`,
+which points at the same instructions for compatibility.
+
 ## Usage
 
 ```bash
