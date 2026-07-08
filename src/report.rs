@@ -1,4 +1,5 @@
 use anyhow::Result;
+use console::{Style, measure_text_width};
 use serde::Serialize;
 use std::time::Duration;
 
@@ -102,11 +103,8 @@ pub fn print_human(r: HumanReport<'_>) {
     settings.push(("build", r.build.to_owned()));
     settings.push(("runtime", fmt_duration(r.total_runtime)));
     settings.push(("RUSTFLAGS", "-C target-cpu=native".to_owned()));
-    settings.push(("base", format!("{} ({})", r.base.spec, r.base.short)));
-    settings.push((
-        "rev",
-        format!("{} ({})", r.candidate.spec, r.candidate.short),
-    ));
+    settings.push(("base", r.base.display()));
+    settings.push(("rev", r.candidate.display()));
 
     let mut rows = vec![[
         "benchmark".to_owned(),
@@ -118,11 +116,7 @@ pub fn print_human(r: HumanReport<'_>) {
     for cmp in r.results {
         let base = fmt_summary(&cmp.base, &cmp.unit);
         let candidate = fmt_summary(&cmp.candidate, &cmp.unit);
-        let delta = if cmp.rel_diff_pct.is_nan() {
-            "n/a".to_owned()
-        } else {
-            format!("{:+.1}%", cmp.rel_diff_pct)
-        };
+        let delta = fmt_delta(cmp);
         rows.push([
             cmp.id.clone(),
             base,
@@ -164,10 +158,15 @@ fn vertical_table(settings: &[(&str, String)], results: &[[String; 5]]) -> Strin
         );
     }
 
-    let width = |s: &str| s.chars().count();
     let cells = || sections.iter().flatten();
-    let key_w = cells().map(|(k, _)| width(k)).max().unwrap_or(0);
-    let val_w = cells().map(|(_, v)| width(v)).max().unwrap_or(0);
+    let key_w = cells()
+        .map(|(k, _)| measure_text_width(k))
+        .max()
+        .unwrap_or(0);
+    let val_w = cells()
+        .map(|(_, v)| measure_text_width(v))
+        .max()
+        .unwrap_or(0);
     let mut out = String::new();
     out.push_str(&format!(
         "┌─{}─┬─{}─┐\n",
@@ -199,6 +198,27 @@ fn verdict_text(v: &Verdict) -> &'static str {
         Verdict::Improved => "improved",
         Verdict::Regressed => "REGRESSED",
         Verdict::NoChange => "no change (within noise)",
+    }
+}
+
+fn fmt_delta(cmp: &Comparison) -> String {
+    if cmp.rel_diff_pct.is_nan() {
+        return "n/a".to_owned();
+    }
+    let direction = if cmp.rel_diff_pct == 0.0 {
+        "same"
+    } else if (cmp.lower_is_better && cmp.rel_diff_pct < 0.0)
+        || (!cmp.lower_is_better && cmp.rel_diff_pct > 0.0)
+    {
+        "better"
+    } else {
+        "worse"
+    };
+    let delta = format!("{:+.1}% ({direction})", cmp.rel_diff_pct);
+    match cmp.verdict {
+        Verdict::Improved => Style::new().green().apply_to(delta).to_string(),
+        Verdict::Regressed => Style::new().red().apply_to(delta).to_string(),
+        Verdict::NoChange => delta,
     }
 }
 
@@ -322,7 +342,7 @@ mod tests {
                 "a-benchmark-with-a-long-name",
                 "1.0 ± 0.1",
                 "1.1 ± 0.2",
-                "+10.0%",
+                "+10.0% (better)",
                 "improved",
             ]
             .map(str::to_owned),
@@ -333,7 +353,16 @@ mod tests {
     fn report_table_stacks_results_as_labelled_sections() {
         let settings = vec![("package", "rmc-minimal".to_owned())];
         let mut results = sample_results();
-        results.push(["fib_20", "2.0 ± 0.1", "1.9 ± 0.2", "-5.0%", "improved"].map(str::to_owned));
+        results.push(
+            [
+                "fib_20",
+                "2.0 ± 0.1",
+                "1.9 ± 0.2",
+                "-5.0% (better)",
+                "improved",
+            ]
+            .map(str::to_owned),
+        );
         let table = report_table(&settings, &results);
         let lines = table.lines().collect::<Vec<_>>();
         // top + 1 setting + 2 benchmarks of (separator + 5 rows) + bottom
@@ -347,11 +376,43 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|l| l.starts_with("│ Δ") && l.contains("-5.0%"))
+                .any(|l| l.starts_with("│ Δ") && l.contains("-5.0% (better)"))
         );
-        let width = lines[0].chars().count();
+        let width = measure_text_width(lines[0]);
         for line in &lines {
-            assert_eq!(line.chars().count(), width, "misaligned row: {line}");
+            assert_eq!(measure_text_width(line), width, "misaligned row: {line}");
         }
+    }
+
+    #[test]
+    fn delta_says_whether_the_change_direction_is_better() {
+        let base = Summary {
+            n: 1,
+            mean: 100.0,
+            std_dev: 0.0,
+            min: 100.0,
+            max: 100.0,
+        };
+        let lower = Summary {
+            mean: 90.0,
+            ..base.clone()
+        };
+        let higher = Summary {
+            mean: 110.0,
+            ..base.clone()
+        };
+
+        let lower_is_better = crate::stats::compare(
+            "x".into(),
+            "metric".into(),
+            true,
+            base.clone(),
+            lower.clone(),
+        );
+        let higher_is_better =
+            crate::stats::compare("x".into(), "metric".into(), false, base, higher);
+
+        assert!(fmt_delta(&lower_is_better).contains("-10.0% (better)"));
+        assert!(fmt_delta(&higher_is_better).contains("+10.0% (better)"));
     }
 }

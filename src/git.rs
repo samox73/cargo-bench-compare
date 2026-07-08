@@ -13,6 +13,16 @@ pub struct ResolvedRev {
     pub spec: String,
     pub sha: String,
     pub short: String,
+    #[serde(skip)]
+    display_spec: String,
+    #[serde(skip)]
+    summary: String,
+}
+
+impl ResolvedRev {
+    pub fn display(&self) -> String {
+        format!("{} ({})", self.display_spec, self.summary)
+    }
 }
 
 pub fn command_line(program: &str, args: &[String]) -> String {
@@ -81,11 +91,48 @@ pub fn resolve_rev(repo_root: &Path, spec: &str) -> Result<ResolvedRev> {
     let short = run_capture("git", &["rev-parse", "--short", &sha], repo_root, &[])?
         .trim()
         .to_owned();
+    let is_hash = is_hash_spec(spec, &sha);
+    let summary = if is_hash {
+        rev_summary(repo_root, &sha)?
+    } else {
+        short.clone()
+    };
     Ok(ResolvedRev {
         spec: spec.to_owned(),
+        display_spec: if is_hash {
+            short.clone()
+        } else {
+            spec.to_owned()
+        },
         sha,
         short,
+        summary,
     })
+}
+
+fn is_hash_spec(spec: &str, sha: &str) -> bool {
+    (4..=40).contains(&spec.len())
+        && spec.chars().all(|c| c.is_ascii_hexdigit())
+        && sha.starts_with(spec)
+}
+
+fn rev_summary(repo_root: &Path, sha: &str) -> Result<String> {
+    let tag = Command::new("git")
+        .args(["describe", "--tags", "--exact-match", sha])
+        .current_dir(repo_root)
+        .output()
+        .with_context(|| "failed to run git describe")?;
+    if tag.status.success() {
+        let tag = String::from_utf8_lossy(&tag.stdout).trim().to_owned();
+        if !tag.is_empty() {
+            return Ok(tag);
+        }
+    }
+    Ok(
+        run_capture("git", &["log", "-1", "--format=%s", sha], repo_root, &[])?
+            .trim()
+            .to_owned(),
+    )
 }
 
 /// Resolve a revision spec, including the tool's sentinels:
@@ -164,6 +211,8 @@ fn snapshot_worktree(repo_root: &Path) -> Result<ResolvedRev> {
         Ok(ResolvedRev {
             spec: "worktree".to_owned(),
             sha: snap_sha,
+            display_spec: "worktree".to_owned(),
+            summary: short.clone(),
             short,
         })
     })();
@@ -190,6 +239,8 @@ fn merge_base_with_default_branch(repo_root: &Path) -> Result<ResolvedRev> {
     Ok(ResolvedRev {
         spec: format!("merge-base({branch})"),
         sha,
+        display_spec: format!("merge-base({branch})"),
+        summary: short.clone(),
         short,
     })
 }
@@ -570,6 +621,24 @@ mod tests {
                 None => assert!(default_base(&dir).is_err()),
             }
         }
+    }
+
+    #[test]
+    fn hash_revs_display_short_hash_and_subject_or_tag() {
+        let dir = init_repo("bcmp-hash-display", "main");
+        let _cleanup = TempDir(dir.clone());
+        std::fs::write(dir.join("x.txt"), "x").unwrap();
+        git_in(&dir, &["add", "-A"]);
+        git_in(&dir, &["commit", "-qm", "fix P3 and P4"]);
+        let sha = git_in(&dir, &["rev-parse", "HEAD"]);
+        let short = git_in(&dir, &["rev-parse", "--short", "HEAD"]);
+
+        let rev = resolve_rev(&dir, &sha).unwrap();
+        assert_eq!(rev.display(), format!("{short} (fix P3 and P4)"));
+
+        git_in(&dir, &["tag", "v1"]);
+        let rev = resolve_rev(&dir, &sha).unwrap();
+        assert_eq!(rev.display(), format!("{short} (v1)"));
     }
 
     #[test]
